@@ -1,0 +1,67 @@
+version: '3.8'
+name: car_racing
+services:
+  car_racing:
+    image: car_racing
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pytorch_racing
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    environment:
+      - DISPLAY=`echo $DISPLAY | sed 's/^[^:]*\(.*\)/172.17.0.1\1/'`
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_REQUIRE_CUDA=cuda>=12.1
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - ${PROJECT_PATH}:/home/docker/car_racing
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - $HOME/.Xauthority:/root/.Xauthority
+    networks:
+      - postgres_network
+    env_file: .env
+    # network_mode: host
+    stdin_open: true # docker run -i
+    tty: true # docker run -t
+    ports:
+      - 4000:4000
+    entrypoint: /bin/bash
+    depends_on:
+      - postgres_db
+
+  postgres_db:
+    image: postgres:16
+    container_name: postgres_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=car_racing_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2GB
+    ports:
+      - 5100:5432
+    expose:
+      - 5100
+    volumes:
+      - ${PROJECT_PATH}/postgres/db:/var/lib/postgresql/data
+      - ${PROJECT_PATH}/postgres/sql:/docker-entrypoint-initdb.d
+    networks:
+      - postgres_network
+    env_file: .env
+
+networks:
+  postgres_network:
+    driver: bridge
+volumes:
+  postgres_db:
+    external: true
