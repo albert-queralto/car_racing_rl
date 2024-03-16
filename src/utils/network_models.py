@@ -94,9 +94,6 @@ class DuelingDQN(nn.Module):
         )
 
         self._build_network() # Builds the neural network model
-
-        self.advantage = self._build_network().to(self.device)
-        self.value = self._build_network(output_size=1).to(self.device)
         self.optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
 
     def forward(self, observation: torch.Tensor) -> torch.Tensor:
@@ -115,28 +112,48 @@ class DuelingDQN(nn.Module):
         torch.Tensor
             Q-values for each action in the environment.
         """
-        advantage = self.advantage(observation)
-        value = self.value(observation)
-        return value + (advantage - advantage.mean())
+        if type(observation) is np.ndarray:
+            observation = torch.from_numpy(observation).float().to(device=self.device)
+        
+        features = self.cnn_model(observation)
+        features = features.view(-1, self.fc_layer_input_size)
+        
+        # Advantage function
+        advantage = self.advantage(features)
+        advantage = advantage - advantage.mean(dim=-1, keepdim=True)
+        
+        # Value function
+        value = self.value(features)
+        value = value.expand(-1, self.output_size)
+        return value + advantage
 
-    def _build_network(self, output_size: Optional[int]=None) -> nn.Module:
+    def _build_network(self) -> nn.Module:
         """
         Builds the neural network model using the linear_nn_model function to
         create a linear neural network with activation functions based on the
         input hidden layer dimensions.
-
-        Parameters:
-        -----------
-        output_size: Optional[int]
-            Output size of the neural network. If None, the output size is
-            equal to the output size of the neural network.
         """
-        if output_size is None:
-            output_size = self.output_size
-        return cnn_model(
-            input_shape=self.input_shape,
-            output_size=self.output_size,
+        self.cnn_model = cnn_model(
             conv_params=self.conv_params,
-            hidden_layer_dim=self.hidden_layers_dim, 
             activation_function=self.activation_function
         )
+        self.cnn_model.to(device=self.device)
+        self.fc_layer_input_size = self.feature_size()
+        
+        self.advantage = linear_model(
+            input_size=self.fc_layer_input_size,
+            output_size=self.output_size,
+            hidden_layer_dim=self.hidden_layers_dim, 
+            activation_function=self.activation_function
+        ).to(device=self.device)
+        
+        self.value = linear_model(
+            input_size=self.fc_layer_input_size,
+            output_size=1,
+            hidden_layer_dim=self.hidden_layers_dim, 
+            activation_function=self.activation_function
+        ).to(device=self.device)
+    
+    def feature_size(self) -> int:
+        dummy_input = torch.randn((1,) + self.input_shape).to(device=self.device)
+        return self.cnn_model(dummy_input).view(1, -1).size(1)

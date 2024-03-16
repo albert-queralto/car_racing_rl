@@ -66,7 +66,7 @@ WORKDIR /opencv/opencv/build
 # Change the last line to be the number of cores you allocate to docker - j4 for 4 cores
 RUN cmake -D CMAKE_BUILD_TYPE=RELEASE \
     -D WITH_CUDA=ON \
-    -D CUDA_VERSION=12.0 \
+    -D CUDA_VERSION=12.4 \
     -D WITH_CUBLAS=ON \
     -D WITH_CUDNN=ON \
     -D OPENCV_DNN_CUDA=ON \

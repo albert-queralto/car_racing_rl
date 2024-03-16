@@ -37,7 +37,6 @@ class BaseAgent(ABC):
         """
         if np.random.random() < epsilon:
             return environment.action_space.sample()
-            # return np.random.randint(0, environment.action_space.n)
         q_values = self._calculate_qvalues(network, observation)
         return q_values.argmax().item()
 
