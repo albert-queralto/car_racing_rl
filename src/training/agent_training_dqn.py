@@ -193,8 +193,7 @@ class AgentTraining:
         Saves the training results in the training_results dictionary.
         """
         attribute_names = [
-            'model_date', 'model_name', 'model_type', 'environment_name',
-            'environment_type', 'epsilon', 'episode', 'time_frame_counter',
+            'epsilon', 'episode', 'time_frame_counter',
             'episode_steps', 'episode_reward'
         ]
 
@@ -527,7 +526,7 @@ if __name__ == '__main__':
         'skip_frames': 5, # Number of frames to skip
         'wait_frames': 50, # Number of frames to wait
         'stack_frames': 4, # Number of frames to stack
-        'gas_weight': 1.5, # Weight for the gas action
+        'gas_weight': 4, # Weight for the gas action
         'env_params': {
             'render_mode': 'rgb_array',
             'continuous': False, # Continuous or discrete action space

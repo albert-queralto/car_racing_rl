@@ -92,6 +92,22 @@ class PreprocessObservationWrapper(gym.Wrapper):
         return preprocess_observation(observation), reward, terminated, truncated, {}
 
 
+class CustomRewardWrapper(gym.Wrapper):
+    """
+    A Gym wrapper that customizes the rewards.
+    """
+    def __init__(self, env, **kwargs):
+        super().__init__(env, **kwargs)
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        
+        # Customizes the reward
+        if np.mean(observation[:, :, 1]) > 185.0:
+            reward -= 0.05
+        return observation, reward, terminated, truncated, info
+
+
 class CustomEnvWrapper(gym.Wrapper):
     """
     A Gym wrapper that combines SkipFramesWrapper, WaitFramesWrapper, and StackFramesWrapper.
@@ -104,15 +120,17 @@ class CustomEnvWrapper(gym.Wrapper):
         **kwargs
     ):
         super().__init__(env, **kwargs)
-        self.env = SkipFramesWrapper(
-            WaitFramesWrapper(
-                StackFramesWrapper(
-                    PreprocessObservationWrapper(env),
-                    stack_frames
+        self.env = CustomRewardWrapper(
+            SkipFramesWrapper(
+                WaitFramesWrapper(
+                    StackFramesWrapper(
+                        PreprocessObservationWrapper(env),
+                        stack_frames
+                    ),
+                    wait_frames
                 ),
-                wait_frames
-            ),
-            skip_frames
+                skip_frames
+            )
         )
 
     def reset(self):

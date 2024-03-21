@@ -194,8 +194,7 @@ class AgentTraining:
         Saves the training results in the training_results dictionary.
         """
         attribute_names = [
-            'model_date', 'model_name', 'model_type', 'environment_name',
-            'environment_type', 'epsilon', 'episode', 'time_frame_counter',
+            'epsilon', 'episode', 'time_frame_counter',
             'episode_steps', 'episode_reward'
         ]
 
@@ -296,6 +295,9 @@ class AgentTraining:
         elif self.mean_reward >= reward_threshold:
             self.end_training = True
             print(f"\nReward threshold reached in {self.episode} episodes")
+
+        elif self.max_episodes // 4 and self.episode_reward >= reward_threshold:
+            self.end_training = True
 
         return self.end_training
 
@@ -508,6 +510,7 @@ if __name__ == '__main__':
             (4, 32, (8, 8), (4, 4)),
             (32, 64, (4, 4), (2, 2)),
             (64, 256, (2, 2), (1, 1)),
+            # (64, 32, (2, 2), (1, 1)),
         ],
         'max_episodes': 1000,
         'n_steps': None,
@@ -524,9 +527,9 @@ if __name__ == '__main__':
         'skip_frames': 5, # Number of frames to skip
         'wait_frames': 50, # Number of frames to wait
         'stack_frames': 4, # Number of frames to stack
-        'gas_weight': 1.5, # Weight for the gas action
+        'gas_weight': 4, # Weight for the gas action
         'env_params': {
-            'render_mode': 'human', # rgb_array
+            'render_mode': 'rgb_array',
             'continuous': False, # Continuous or discrete action space
         }
     }
