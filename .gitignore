@@ -141,3 +141,6 @@ logs/
 src/tests/
 tensorboard_logs/
 postgres/db/
+
+.trunk/
+.vscode/
