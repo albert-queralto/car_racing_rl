@@ -1,38 +1,190 @@
-import os
-import io
-import json
 import sys
-import time
+import argparse
+from dataclasses import dataclass
 import numpy as np
-from datetime import datetime
-import gymnasium as gym
-import torch
+import time
 # from codecarbon import track_emissions
 from memory_profiler import profile
-
 from typing import Any
-from dataclasses import dataclass
-from enum import Enum
+
+
+import gymnasium as gym
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.distributions import Beta
+from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
 from pathlib import Path
 MAIN_PATH = Path().resolve()
 sys.path.append(str(MAIN_PATH))
 
-from src.utils.setup_dirs import setup_dirs
-from src.utils.custom_wrappers import CustomEnvWrapper
-from src.utils.buffers import ExperienceBuffer, ReplayBuffer, PrioritizedReplayBuffer
-from src.utils.agents import BaseAgent, DuelingDQNAgent
-from src.utils.network_models import DuelingDQN
+from src.utils.network_models import PPO
+from src.utils.buffers import ExperienceBuffer
 
-setup_dirs(MAIN_PATH)
+parser = argparse.ArgumentParser(description='Train a PPO agent for the CarRacing-v0')
+parser.add_argument('--gamma', type=float, default=0.99, metavar='G', help='discount factor (default: 0.99)')
+parser.add_argument('--action-repeat', type=int, default=8, metavar='N', help='repeat action in N frames (default: 8)')
+parser.add_argument('--img-stack', type=int, default=4, metavar='N', help='stack N image in a state (default: 4)')
+parser.add_argument('--render', action='store_true', help='render the environment')
+parser.add_argument('--vis', action='store_true', help='use visdom')
+parser.add_argument(
+    '--log-interval', type=int, default=10, metavar='N', help='interval between training status logs (default: 10)')
+args = parser.parse_args()
+
+use_cuda = torch.cuda.is_available()
+device = torch.device("cuda" if use_cuda else "cpu")
+
+transition = np.dtype([('s', np.float64, (args.img_stack, 96, 96)), ('a', np.float64, (3,)), ('a_logp', np.float64),
+                       ('r', np.float64), ('s_', np.float64, (args.img_stack, 96, 96))])
 
 
-class Mode(Enum):
+class Env():
     """
-    Enum class to define the mode of the action.
+    Environment wrapper for CarRacing 
     """
-    EXPLORATION = 1
-    TRAIN = 2
+
+    def __init__(self):
+        self.env = gym.make('CarRacing-v2')
+        self.reward_threshold = self.env.spec.reward_threshold
+
+    def reset(self):
+        self.counter = 0
+        self.av_r = self.reward_memory()
+
+        self.die = False
+        img_rgb, _ = self.env.reset()
+        img_gray = self.rgb2gray(img_rgb)
+        self.stack = [img_gray] * args.img_stack  # four frames for decision
+        return np.array(self.stack), {}
+
+    def step(self, action):
+        total_reward = 0
+        for i in range(args.action_repeat):
+            img_rgb, reward, die, _, _ = self.env.step(action)
+
+            # green penalty
+            if np.mean(img_rgb[:, :, 1]) > 185.0:
+                reward -= 0.05
+            total_reward += reward
+            # if no reward recently, end the episode
+            done = True if self.av_r(reward) <= -0.1 else False
+            if done or die:
+                break
+        img_gray = self.rgb2gray(img_rgb)
+        self.stack.pop(0)
+        self.stack.append(img_gray)
+        assert len(self.stack) == args.img_stack
+        return np.array(self.stack), total_reward, done, die, {}
+
+    def render(self, *arg):
+        self.env.render(*arg)
+
+    @staticmethod
+    def rgb2gray(rgb, norm=True):
+        # rgb image -> gray [0, 1]
+        gray = np.dot(rgb[...,:3], [0.299, 0.587, 0.114])
+        
+        if norm:
+            # normalize
+            gray = gray / 128. - 1.
+        return gray
+
+    @staticmethod
+    def reward_memory():
+        # record reward for last 100 steps
+        count = 0
+        length = 100
+        history = np.zeros(length)
+
+        def memory(reward):
+            nonlocal count
+            history[count] = reward
+            count = (count + 1) % length
+            return np.mean(history)
+
+        return memory
+
+
+@dataclass
+class PPOAgent:
+    network: nn.Module
+    max_grad_norm: float
+    clip_param: float
+    ppo_epoch: int
+    buffer_capacity: int
+    batch_size: int
+        
+    def __post_init__(self):
+        self.training_step = 0
+        
+        self.net = self.network.double().to(device)
+        self.buffer = np.empty(self.buffer_capacity, dtype=transition)
+        self.counter = 0
+
+
+    def select_action(self, state):
+        state = torch.from_numpy(state).double().to(device).unsqueeze(0)
+        with torch.no_grad():
+            alpha, beta = self.net(state)[0]
+        dist = Beta(alpha, beta)
+        action = dist.sample()
+        a_logp = dist.log_prob(action).sum(dim=1)
+        action = action.squeeze().cpu().numpy()
+        a_logp = a_logp.item()
+        return action, a_logp
+
+    def save_param(self):
+        torch.save(self.net.state_dict(), 'param/ppo_net_params.pkl')
+
+    def store(self, transition):
+        self.buffer[self.counter] = transition
+        self.counter += 1
+        if self.counter == self.buffer_capacity:
+            self.counter = 0
+            return True
+        else:
+            return False
+
+    def update(self):
+        self.training_step += 1
+
+        s = torch.tensor(self.buffer['s'], dtype=torch.double).to(device)
+        a = torch.tensor(self.buffer['a'], dtype=torch.double).to(device)
+        r = torch.tensor(self.buffer['r'], dtype=torch.double).to(device).view(-1, 1)
+        s_ = torch.tensor(self.buffer['s_'], dtype=torch.double).to(device)
+
+        old_a_logp = torch.tensor(self.buffer['a_logp'], dtype=torch.double).to(device).view(-1, 1)
+
+        with torch.no_grad():
+            target_v = r + args.gamma * self.net(s_)[1]
+            adv = target_v - self.net(s)[1]
+            # adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+
+        for _ in range(self.ppo_epoch):
+            for index in BatchSampler(SubsetRandomSampler(range(self.buffer_capacity)), self.batch_size, False):
+
+                alpha, beta = self.net(s[index])[0]
+                print(alpha.shape)
+                print(beta.shape)
+                print(s[index].shape)
+                print(a[index].shape)
+                dist = Beta(alpha, beta)
+                print(dist)
+                a_logp = dist.log_prob(a[index]).sum(dim=1, keepdim=True)
+                print(a_logp)
+                ratio = torch.exp(a_logp - old_a_logp[index])
+
+                surr1 = ratio * adv[index]
+                surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv[index]
+                action_loss = -torch.min(surr1, surr2).mean()
+                value_loss = F.smooth_l1_loss(self.net(s[index])[1], target_v[index])
+                loss = action_loss + 2. * value_loss
+
+                self.net.optimizer.zero_grad()
+                loss.backward()
+                self.net.optimizer.step()
 
 
 
@@ -138,16 +290,15 @@ class InfoPrinter:
         print(f"Device: {device}")
 
 
-
 @dataclass
 class AgentTraining:
-    agent: BaseAgent
+    agent: PPOAgent
     env: gym.Env
-    buffer: ExperienceBuffer
+    buffer: Any
     training_params: dict[str, Any]
     environment_params: dict[str, Any]
     buffer_params: dict[str, Any]
-
+    
     def __post_init__(self) -> None:
         # Unpacks the parameters from the dictionaries and creates the variables
         self._unpack_params()
@@ -166,7 +317,6 @@ class AgentTraining:
         Resets the variables used during network training.
         """
         self.model_date = str(datetime.now())
-        self.epsilon = self.epsilon_start
         self.episode = 0
         self.end_training = False
 
@@ -267,197 +417,51 @@ class AgentTraining:
     # @track_emissions
     @profile
     def train(self) -> None:
-        
-        # if self.env.render_mode == 'rgb_array':
-        #     self.env = RecordVideo(self.env, os.path.join(MAIN_PATH, 'videos'), episode_trigger=lambda x: x % 1 == 0)
-        
-        self._reset_training_variables()
-        self._reset_episode_variables()
-        self.info_printer.print_device_info(self.agent.device)
-        
-        print("Filling replay buffer with experiences...")
-        self.info_printer.print_training_info(self.training_params)
-        
-        # Fill the buffer with experiences in order to start the training
-        while not self.buffer.is_ready(batch_size=self.batch_size):
-            self.perform_action_step(Mode.EXPLORATION)
+        training_records = []
+        running_score = 0
+        state, _ = env.reset()
+        for i_ep in range(100000):
+            score = 0
+            state, _ = env.reset()
 
-        while not self.end_training:
-            self._reset_episode_variables()
-
-            while not self.is_gamedone:
-                self.perform_episode()
-                if self.end_training:
-                    self.save_model_params()
-                    self.env.close()
-                    
-                    # Save the training results to a file, as well as the model
-                    # parameters and the model binary
-                    self.save_training_results_to_file()
-                    self.save_model_params_to_file()
-                    self.save_model_binary(self.agent.main_network)
+            for t in range(1000):
+                action, a_logp = agent.select_action(state)
+                state_, reward, done, die, _ = env.step(action * np.array([2., 1., 1.]) + np.array([-1., 0., 0.]))
+                if args.render:
+                    env.render()
+                if agent.store((state, action, a_logp, reward, state_)):
+                    print('updating')
+                    agent.update()
+                score += reward
+                state = state_
+                if done or die:
                     break
-        
-    def perform_episode(self) -> None:
-        """
-        Performs an episode in the environment and updates the agent's network.
-        """
-        self.is_gamedone = self.perform_action_step(mode=Mode.TRAIN)
-        
-        self.agent.update_sync_networks(
-            self.episode_steps,
-            self.network_update_frequency,
-            self.network_sync_frequency,
-            self.discount_factor,
-            self.buffer,
-            self.batch_size
-        )
-        
-        self.time_frame_counter += 1
-        
-        if self.is_gamedone:
-            self.episode += 1
-            self.mean_reward = 0
-            self.mean_loss = 0
-            self.save_training_results()
-            self.agent.update_loss = []
-            
-            self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_end)
-            self.maximum_reward = max(self.maximum_reward, self.mean_reward)
-        
-            self.info_printer.print_episode_info(
-                buffer=self.buffer,
-                episode=self.episode,
-                max_episodes=self.max_episodes,
-                time_frame_counter=self.time_frame_counter,
-                episode_reward=self.episode_reward,
-                mean_reward=self.mean_reward,
-                mean_loss=self.mean_loss,
-                epsilon=self.epsilon,
-                maximum_reward=self.maximum_reward
-            )
-        
-            self.end_training = self.check_end_training(
-                max_episodes=self.max_episodes,
-                reward_threshold=self.reward_threshold
-            )
+            running_score = running_score * 0.99 + score * 0.01
 
-    def perform_action_step(self, mode: Mode) -> bool:
-        """
-        Performs an action step in the environment and updates the agent's network.
-        """     
-        # Selects an action based on the mode and the observation
-        action = self.select_action(mode, self.observation)
-
-        # Performs a step in the environment
-        next_observation, instantaneous_reward, done, _, _ = env.step(action)
-        
-        # Calculates the value of the negative reward counter and adjusts the
-        # episode reward based on the instantaneous reward and the action taken
-        self.set_negative_reward_counter(instantaneous_reward)
-        self.adjust_episode_reward(instantaneous_reward, action)
-
-        self.handle_nsteps(self.observation, action, instantaneous_reward, done, next_observation)
-
-        self.observation = next_observation.copy()
-
-        if done:
-            self.observation, _ = self.env.reset()
-
-        early_stop = self.early_stop_episode()
-        if early_stop is True:
-            return early_stop
-
-        return done
-
-    def handle_nsteps(self,
-            observation_tensor: torch.Tensor,
-            action: np.ndarray, 
-            reward: float, 
-            done: bool, 
-            next_observation_tensor: torch.Tensor
-        ):
-        """
-        Handles the n-steps for the training.
-        """
-        if self.n_steps:
-            self.agent.add_step(observation_tensor, action, reward, done, next_observation_tensor)
-            if self.agent.completed():
-                self.complete_n_step_rollout()
-
-        else:
-            self.buffer.store_experience(observation_tensor, action, reward, done, next_observation_tensor)
-
-    def complete_n_step_rollout(self):
-        """
-        Completes n-step rollout and stores experiences in the buffer.
-        """
-        self.agent.n_step_roll_out_collapse(gamma=self.discount_factor)
-        for observation, action, reward, done, next_observation in self.agent.steps:
-            self.buffer.store_experience(observation, action, reward, done, next_observation)
-        self.agent.reset()
-    
-    def early_stop_episode(self) -> bool:
-        """
-        Stops the episode early if the negative reward counter surpasses a
-        certain threshold or the episode reward is negative.
-        
-        Based on the code from:
-        https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
-        """
-        if (self.negative_reward_counter >= self.negative_reward_counter_threshold
-            ) or (self.episode_reward < self.episode_reward_threshold):
-            return True
-        return False
-    
-    def set_negative_reward_counter(self, instantaneous_reward: float) -> None:
-        """
-        Sets the negative reward counter based on the instantaneous reward.
-        
-        Based on the code from:
-        https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
-        """
-        if (self.time_frame_counter > self.time_frame_counter_threshold
-            ) and (instantaneous_reward < self.instantaneous_reward_threshold):
-            self.negative_reward_counter += 1
-        else:
-            self.negative_reward_counter = 0
-
-    def adjust_episode_reward(self, instantaneous_reward: float, action: int) -> None:
-        """
-        Adjusts the episode reward based on the instantaneous reward and the
-        action taken.
-        
-        Based on the code from:
-        https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
-        """
-        if action == 3:
-            instantaneous_reward *= self.gas_weight
-
-        self.episode_reward += instantaneous_reward
-
-    def select_action(self, mode: Mode, observation: np.ndarray) -> int:
-        """Selects an action based on the mode and the observation."""
-        if mode == Mode.TRAIN:
-            return self.agent.select_action(
-                environment=self.env,
-                network=self.agent.main_network,
-                observation=observation,
-                epsilon=self.epsilon,
-            )
-        return self.env.action_space.sample()
+            if i_ep % args.log_interval == 0:
+                print('Ep {}\tLast score: {:.2f}\tMoving average score: {:.2f}'.format(i_ep, score, running_score))
+                agent.save_param()
+            if running_score > env.reward_threshold:
+                print("Solved! Running reward is now {} and the last episode runs to {}!".format(running_score, score))
+                break
 
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     # Sets the training params
     training_params = {
         'model_name': 'DuelingDQN',
         'model_type': 'DuelingDQN',
         'input_shape': 4,
+        'cnn_output_size': 256,
         'hidden_layers_dim': 256,
-        'epsilon_start': 1,
-        'epsilon_decay': 0.995,
-        'epsilon_end': 0.01,
+        'num_actions': 3,
+        'layer_sizes': [8, 16, 32, 64, 128],
+        'kernel_sizes': [4, 3, 3, 3, 3],
+        'strides': [2, 2, 2, 2, 1],
+        'max_grad_norm': 0.5,
+        'clip_param': 0.1,
+        'ppo_epoch': 10,
         'time_frame_counter_threshold': 100,
         'instantaneous_reward_threshold': 0,
         'negative_reward_counter_threshold': 50,
@@ -466,12 +470,6 @@ if __name__ == '__main__':
         'network_sync_frequency': 100,
         'learning_rate': 0.00025,#3.9e-5, 
         'discount_factor': 0.99,
-        'conv_params': [
-            (4, 32, (8, 8), (4, 4)),
-            (32, 64, (4, 4), (2, 2)),
-            (64, 256, (2, 2), (1, 1)),
-            # (64, 32, (2, 2), (1, 1)),
-        ],
         'max_episodes': 1000,
         'n_steps': None,
         'activation_function': 'ReLU',
@@ -496,54 +494,89 @@ if __name__ == '__main__':
     
     # Sets the buffer params
     buffer_params = {
-        'max_capacity': 100000,
-        'batch_size': 64,
-        'alpha': 0.6,
-        'beta': 0.4,
-        'beta_step': 0.001
+        'max_capacity': 2000,
+        'batch_size': 128,
+        # 'alpha': 0.6,
+        # 'beta': 0.4,
+        # 'beta_step': 0.001
     }
     
-    env = gym.make(
-        id=environment_params['environment_name'],
-        **environment_params['env_params']
-    )
+    # env = gym.make(
+    #     id=environment_params['environment_name'],
+    #     **environment_params['env_params']
+    # )
     
-    env = CustomEnvWrapper(
-        env,
-        skip_frames=environment_params['skip_frames'],
-        wait_frames=environment_params['wait_frames'],
-        stack_frames=environment_params['stack_frames']
-    )
+    # env = CustomEnvWrapper(
+    #     env,
+    #     skip_frames=environment_params['skip_frames'],
+    #     wait_frames=environment_params['wait_frames'],
+    #     stack_frames=environment_params['stack_frames']
+    # )
     
-    environment_params.update({
-        'reward_threshold': env.spec.reward_threshold,
-        'action_space': env.action_space.n,
-        'observation_space_shape': (4, 84, 84),
-    })
+    # environment_params.update({
+    #     'reward_threshold': env.spec.reward_threshold,
+    #     'action_space': env.action_space.n,
+    #     'observation_space_shape': (4, 84, 84),
+    # })
     
-    # Initialize the buffer, the model, the agent and the network updater
-    buffer = ReplayBuffer(max_capacity=buffer_params['max_capacity'])
+    env = Env()
 
-    model = DuelingDQN(
+    model = PPO(
+        input_shape=training_params['input_shape'],
+        cnn_output_size=training_params['cnn_output_size'],
+        hidden_size=training_params['hidden_layers_dim'],
+        num_actions=training_params['num_actions'],
         learning_rate=training_params['learning_rate'],
-        input_shape=environment_params['observation_space_shape'],
-        output_size=environment_params['action_space'],
-        hidden_layers_dim=training_params['hidden_layers_dim'],
-        conv_params=training_params['conv_params'],
+        layer_sizes=training_params['layer_sizes'],
+        kernel_sizes=training_params['kernel_sizes'],
+        strides=training_params['strides'],
         activation_function=training_params['activation_function'],
     )
     
-    agent = DuelingDQNAgent(model)
-    
-    # Initialize the training class
+    agent = PPOAgent(
+        network=model,
+        max_grad_norm=training_params['max_grad_norm'],
+        clip_param=training_params['clip_param'],
+        ppo_epoch=training_params['ppo_epoch'],
+        buffer_capacity=buffer_params['max_capacity'],
+        batch_size=buffer_params['batch_size']
+    )
+
     trainer = AgentTraining(
-        agent = agent,
+        agent=agent,
         env=env,
-        buffer=buffer,
+        buffer=None,
         training_params=training_params,
         environment_params=environment_params,
         buffer_params=buffer_params
     )
 
-    # Start the training
     trainer.train()
+
+    # training_records = []
+    # running_score = 0
+    # state, _ = env.reset()
+    # for i_ep in range(100000):
+    #     score = 0
+    #     state, _ = env.reset()
+
+    #     for t in range(1000):
+    #         action, a_logp = agent.select_action(state)
+    #         state_, reward, done, die, _ = env.step(action * np.array([2., 1., 1.]) + np.array([-1., 0., 0.]))
+    #         if args.render:
+    #             env.render()
+    #         if agent.store((state, action, a_logp, reward, state_)):
+    #             print('updating')
+    #             agent.update()
+    #         score += reward
+    #         state = state_
+    #         if done or die:
+    #             break
+    #     running_score = running_score * 0.99 + score * 0.01
+
+    #     if i_ep % args.log_interval == 0:
+    #         print('Ep {}\tLast score: {:.2f}\tMoving average score: {:.2f}'.format(i_ep, score, running_score))
+    #         agent.save_param()
+    #     if running_score > env.reward_threshold:
+    #         print("Solved! Running reward is now {} and the last episode runs to {}!".format(running_score, score))
+    #         break

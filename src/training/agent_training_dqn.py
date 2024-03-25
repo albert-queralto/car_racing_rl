@@ -211,43 +211,6 @@ class AgentTraining:
         """
         Saves the model parameters in the model_store dictionary.
         """
-        # attribute_names = [
-        #     'model_date',
-        #     'model_name',
-        #     'model_type',
-        #     'environment_name',
-        #     'environment_type',
-        #     'env_params',
-        #     'hidden_layers_dim',
-        #     'batch_size',
-        #     'max_capacity',
-        #     'learning_rate',
-        #     'discount_factor',
-        #     'epsilon_start',
-        #     'epsilon_decay',
-        #     'epsilon_end',
-        #     'nblock',
-        #     'network_update_frequency',
-        #     'network_sync_frequency',
-        #     'max_episodes',
-        #     'n_steps',
-        #     'alpha',
-        #     'beta',
-        #     'beta_step',
-        #     'activation_function',
-        #     'optimizer',
-        #     'maximum_reward',
-        #     'skip_frames',
-        #     'wait_frames',
-        #     'stack_frames',
-        #     'time_frame_counter_threshold',
-        #     'instantaneous_reward_threshold',
-        #     'negative_reward_counter_threshold',
-        #     'episode_reward_threshold',
-        #     'conv_params',
-        #     'gas_weight'
-        # ]
-
         for attr_name in self.model_store.keys():
             self.model_store[attr_name].append(getattr(self, attr_name))
 
@@ -295,7 +258,7 @@ class AgentTraining:
             self.end_training = True
             print(f"\nReward threshold reached in {self.episode} episodes")
 
-        elif self.max_episodes // 2 and self.episode_reward >= reward_threshold:
+        elif self.episode_reward >= reward_threshold:
             self.end_training = True
 
         return self.end_training
