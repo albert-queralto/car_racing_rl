@@ -159,8 +159,6 @@ class DuelingDQN(nn.Module):
         return self.cnn_model(dummy_input).view(1, -1).size(1)
     
 
-
-
 class PPO(nn.Module):
     """
     Actor-Critic Network for PPO
