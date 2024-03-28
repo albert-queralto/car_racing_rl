@@ -55,8 +55,7 @@ class SetupStorage:
         n_step_key = ['n_steps']
 
         training_results_keys = [
-            'model_date', 'model_name', 'model_type', 'environment_name',
-            'environment_type', 'epsilon', 'episode', 'time_frame_counter',
+            'epsilon', 'episode', 'time_frame_counter', 'reward_moving_avg',
             'episode_steps', 'episode_reward', 'average_rewards', 'loss_evolution'
         ]
         
@@ -105,6 +104,7 @@ class InfoPrinter:
             max_episodes: int,
             time_frame_counter: int,
             episode_reward: float,
+            reward_moving_avg: float,
             mean_reward: float,
             mean_loss: float,
             epsilon: float,
@@ -119,6 +119,7 @@ class InfoPrinter:
             f"Episode: {episode}/{max_episodes} "
             f"- Time Frames: {time_frame_counter} "
             f"- Episode Reward: {episode_reward:.2f} "
+            f"- Moving Avg: {reward_moving_avg:.2f} "
             f"- Mean Reward: {mean_reward:.2f} "
             f"- Loss: {mean_loss:.2f} "
             f"- Epsilon: {epsilon:.3f} "
@@ -168,6 +169,7 @@ class AgentTraining:
         self.epsilon = self.epsilon_start
         self.episode = 0
         self.end_training = False
+        self.reward_moving_avg = 0
 
     def _reset_episode_variables(self) -> None:
         """
@@ -260,16 +262,16 @@ class AgentTraining:
 
         elif self.episode_reward >= reward_threshold:
             self.end_training = True
+        
+        elif self.reward_moving_avg > reward_threshold:
+            print("Moving average reward is now {} and the last episode runs to {}!".format(self.reward_moving_avg, self.episode_reward))
+            self.end_training = True
 
         return self.end_training
 
     # @track_emissions
     @profile
     def train(self) -> None:
-        
-        # if self.env.render_mode == 'rgb_array':
-            # self.env = RecordVideo(self.env, os.path.join(MAIN_PATH, 'videos'), episode_trigger=lambda x: x % 1 == 0)
-        
         self._reset_training_variables()
         self._reset_episode_variables()
         self.info_printer.print_device_info(self.agent.device)
@@ -313,6 +315,7 @@ class AgentTraining:
         )
         
         self.time_frame_counter += 1
+        self.reward_moving_avg = self.reward_moving_avg * 0.99 + self.episode_reward * 0.01
         
         if self.is_gamedone:
             self.episode += 1
@@ -330,6 +333,7 @@ class AgentTraining:
                 max_episodes=self.max_episodes,
                 time_frame_counter=self.time_frame_counter,
                 episode_reward=self.episode_reward,
+                reward_moving_avg=self.reward_moving_avg,
                 mean_reward=self.mean_reward,
                 mean_loss=self.mean_loss,
                 epsilon=self.epsilon,
@@ -349,7 +353,7 @@ class AgentTraining:
         action = self.select_action(mode, self.observation)
 
         # Performs a step in the environment
-        next_observation, instantaneous_reward, done, _, _ = env.step(action)
+        next_observation, instantaneous_reward, done, truncated, _ = env.step(action)
         
         # Calculates the value of the negative reward counter and adjusts the
         # episode reward based on the instantaneous reward and the action taken
@@ -360,14 +364,13 @@ class AgentTraining:
 
         self.observation = next_observation.copy()
 
-        if done:
+        if done or truncated:
             self.observation, _ = self.env.reset()
+            return True
 
         early_stop = self.early_stop_episode()
-        if early_stop is True:
+        if early_stop:
             return early_stop
-
-        return done
 
     def handle_nsteps(self,
             observation_tensor: torch.Tensor,
@@ -525,6 +528,12 @@ if __name__ == '__main__':
     
     # Initialize the buffer, the model, the agent and the network updater
     buffer = ReplayBuffer(max_capacity=buffer_params['max_capacity'])
+    # buffer = PrioritizedReplayBuffer(
+    #     max_capacity=buffer_params['max_capacity'],
+    #     alpha=buffer_params['alpha'],
+    #     beta=buffer_params['beta'],
+    #     beta_step=buffer_params['beta_step']
+    # )
 
     model = DQN(
         learning_rate=training_params['learning_rate'],
