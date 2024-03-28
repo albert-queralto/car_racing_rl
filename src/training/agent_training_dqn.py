@@ -195,7 +195,7 @@ class AgentTraining:
         Saves the training results in the training_results dictionary.
         """
         attribute_names = [
-            'epsilon', 'episode', 'time_frame_counter',
+            'epsilon', 'episode', 'time_frame_counter', 'reward_moving_avg',
             'episode_steps', 'episode_reward'
         ]
 
@@ -223,26 +223,28 @@ class AgentTraining:
         torch.save(model, file_path)
 
     def _convert_to_string(self, dictionary):
+        dictionary = dictionary.copy()
         for key, value in dictionary.items():
             dictionary[key] = str(value)
+        return dictionary
 
     def save_training_results_to_file(self) -> None:
         """Saves the training results stored a dictionary to a JSON file."""
         results_str = f"{self.model_date}_{self.model_name}_training_results.json"
         file_path = os.path.join(MAIN_PATH, 'models', results_str)
-        self._convert_to_string(self.training_results)
+        training_results = self._convert_to_string(self.training_results)
 
         with open(file_path, 'w') as file:
-            json.dump(self.training_results, file, indent=4)
+            json.dump(training_results, file, indent=4)
 
     def save_model_params_to_file(self) -> None:
         """Saves the model parameters stored a dictionary to a JSON file."""
         model_str = f"{self.model_date}_{self.model_name}_model_params.json"
         file_path = os.path.join(MAIN_PATH, 'models', model_str)
-        self._convert_to_string(self.model_store)
+        model_store = self._convert_to_string(self.model_store)
 
         with open(file_path, 'w') as file:
-            json.dump(self.model_store, file, indent=4)
+            json.dump(model_store, file, indent=4)
 
     def check_end_training(self,
             max_episodes: int,
@@ -353,7 +355,7 @@ class AgentTraining:
         action = self.select_action(mode, self.observation)
 
         # Performs a step in the environment
-        next_observation, instantaneous_reward, done, truncated, _ = env.step(action)
+        next_observation, instantaneous_reward, done, truncated, _ = self.env.step(action)
         
         # Calculates the value of the negative reward counter and adjusts the
         # episode reward based on the instantaneous reward and the action taken

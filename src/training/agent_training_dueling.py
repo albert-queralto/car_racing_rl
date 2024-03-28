@@ -56,8 +56,7 @@ class SetupStorage:
         n_step_key = ['n_steps']
 
         training_results_keys = [
-            'model_date', 'model_name', 'model_type', 'environment_name',
-            'environment_type', 'epsilon', 'episode', 'time_frame_counter',
+            'epsilon', 'episode', 'time_frame_counter', 'reward_moving_avg',
             'episode_steps', 'episode_reward', 'average_rewards', 'loss_evolution'
         ]
         
@@ -106,6 +105,7 @@ class InfoPrinter:
             max_episodes: int,
             time_frame_counter: int,
             episode_reward: float,
+            reward_moving_avg: float,
             mean_reward: float,
             mean_loss: float,
             epsilon: float,
@@ -120,6 +120,7 @@ class InfoPrinter:
             f"Episode: {episode}/{max_episodes} "
             f"- Time Frames: {time_frame_counter} "
             f"- Episode Reward: {episode_reward:.2f} "
+            f"- Moving Avg: {reward_moving_avg:.2f} "
             f"- Mean Reward: {mean_reward:.2f} "
             f"- Loss: {mean_loss:.2f} "
             f"- Epsilon: {epsilon:.3f} "
@@ -169,6 +170,7 @@ class AgentTraining:
         self.epsilon = self.epsilon_start
         self.episode = 0
         self.end_training = False
+        self.reward_moving_avg = 0
 
     def _reset_episode_variables(self) -> None:
         """
@@ -194,7 +196,7 @@ class AgentTraining:
         Saves the training results in the training_results dictionary.
         """
         attribute_names = [
-            'epsilon', 'episode', 'time_frame_counter',
+            'epsilon', 'episode', 'time_frame_counter', 'reward_moving_avg',
             'episode_steps', 'episode_reward'
         ]
 
@@ -222,26 +224,28 @@ class AgentTraining:
         torch.save(model, file_path)
 
     def _convert_to_string(self, dictionary):
+        dictionary = dictionary.copy()
         for key, value in dictionary.items():
             dictionary[key] = str(value)
+        return dictionary
 
     def save_training_results_to_file(self) -> None:
         """Saves the training results stored a dictionary to a JSON file."""
         results_str = f"{self.model_date}_{self.model_name}_training_results.json"
         file_path = os.path.join(MAIN_PATH, 'models', results_str)
-        self._convert_to_string(self.training_results)
+        training_results = self._convert_to_string(self.training_results)
 
         with open(file_path, 'w') as file:
-            json.dump(self.training_results, file, indent=4)
+            json.dump(training_results, file, indent=4)
 
     def save_model_params_to_file(self) -> None:
         """Saves the model parameters stored a dictionary to a JSON file."""
         model_str = f"{self.model_date}_{self.model_name}_model_params.json"
         file_path = os.path.join(MAIN_PATH, 'models', model_str)
-        self._convert_to_string(self.model_store)
+        model_store = self._convert_to_string(self.model_store)
 
         with open(file_path, 'w') as file:
-            json.dump(self.model_store, file, indent=4)
+            json.dump(model_store, file, indent=4)
 
     def check_end_training(self,
             max_episodes: int,
@@ -314,6 +318,7 @@ class AgentTraining:
         )
         
         self.time_frame_counter += 1
+        self.reward_moving_avg = self.reward_moving_avg * 0.99 + self.episode_reward * 0.01
         
         if self.is_gamedone:
             self.episode += 1
@@ -331,11 +336,15 @@ class AgentTraining:
                 max_episodes=self.max_episodes,
                 time_frame_counter=self.time_frame_counter,
                 episode_reward=self.episode_reward,
+                reward_moving_avg=self.reward_moving_avg,
                 mean_reward=self.mean_reward,
                 mean_loss=self.mean_loss,
                 epsilon=self.epsilon,
                 maximum_reward=self.maximum_reward
             )
+        
+            self.save_training_results_to_file()
+            self.save_model_binary(self.agent.main_network)
         
             self.end_training = self.check_end_training(
                 max_episodes=self.max_episodes,
@@ -350,8 +359,8 @@ class AgentTraining:
         action = self.select_action(mode, self.observation)
 
         # Performs a step in the environment
-        next_observation, instantaneous_reward, done, _, _ = env.step(action)
-        
+        next_observation, instantaneous_reward, done, truncated, _ = self.env.step(action)
+
         # Calculates the value of the negative reward counter and adjusts the
         # episode reward based on the instantaneous reward and the action taken
         self.set_negative_reward_counter(instantaneous_reward)
@@ -361,14 +370,11 @@ class AgentTraining:
 
         self.observation = next_observation.copy()
 
-        if done:
+        if done or truncated:
             self.observation, _ = self.env.reset()
+            return True
 
-        early_stop = self.early_stop_episode()
-        if early_stop is True:
-            return early_stop
-
-        return done
+        return early_stop if (early_stop := self.early_stop_episode()) else False
 
     def handle_nsteps(self,
             observation_tensor: torch.Tensor,
@@ -452,7 +458,6 @@ if __name__ == '__main__':
     # Sets the training params
     training_params = {
         'model_name': 'DuelingDQN',
-        'model_type': 'DuelingDQN',
         'input_shape': 4,
         'hidden_layers_dim': 256,
         'epsilon_start': 1,
