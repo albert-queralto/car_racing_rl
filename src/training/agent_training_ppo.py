@@ -110,7 +110,6 @@ class PPOAgent:
         self.net = self.network.double().to(self.device)
         self.buffer = np.empty(self.buffer_capacity, dtype=transition)
         self.counter = 0
-        
         self.update_loss = []
 
     def select_action(self, observation: np.ndarray):
@@ -123,9 +122,6 @@ class PPOAgent:
         action = action.squeeze().cpu().numpy()
         a_logp = a_logp.item()
         return action, a_logp
-
-    # def save_param(self):
-    #     torch.save(self.net.state_dict(), 'param/ppo_net_params.pkl')
 
     def store(self, transition):
         self.buffer[self.counter] = transition
@@ -160,18 +156,17 @@ class PPOAgent:
                 surr1 = ratio * adv[index]
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv[index]
                 action_loss = -torch.min(surr1, surr2).mean()
-                value_loss = F.smooth_l1_loss(self.net(s[index])[1], target_v[index])
+                value_loss = F.smooth_l1_loss(self.net(observation[index])[1], target_v[index])
                 loss = action_loss + 2. * value_loss
-
-                self.net.optimizer.zero_grad()
-                loss.backward()
-                self.net.optimizer.step()
 
                 if self.device.type == 'cuda':
                     self.update_loss.append(loss.cpu().detach().numpy())
                 else:
                     self.update_loss.append(loss.detach().numpy())
 
+                self.net.optimizer.zero_grad()
+                loss.backward()
+                self.net.optimizer.step()
 
 class SetupStorage:
     """
@@ -432,6 +427,7 @@ class AgentTraining:
             self.episode += 1
             self.mean_reward = 0
             self.mean_loss = 0
+            print(self.agent.update_loss)
             self.save_training_results()
             self.agent.update_loss = []
             
@@ -549,9 +545,6 @@ if __name__ == "__main__":
     buffer_params = {
         'max_capacity': 2000,
         'batch_size': 128,
-        # 'alpha': 0.6,
-        # 'beta': 0.4,
-        # 'beta_step': 0.001
     }
     
     # env = gym.make(
