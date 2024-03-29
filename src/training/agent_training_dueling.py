@@ -263,7 +263,11 @@ class AgentTraining:
             self.end_training = True
             print(f"\nReward threshold reached in {self.episode} episodes")
 
-        elif self.episode_reward >= reward_threshold:
+        # elif self.episode_reward >= reward_threshold:
+        #     self.end_training = True
+        
+        elif self.reward_moving_avg > reward_threshold:
+            print("Moving average reward is now {} and the last episode runs to {}".format(self.reward_moving_avg, self.episode_reward))
             self.end_training = True
 
         return self.end_training

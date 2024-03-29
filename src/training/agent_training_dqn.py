@@ -34,7 +34,6 @@ class Mode(Enum):
     TRAIN = 2
 
 
-
 class SetupStorage:
     """
     Sets up the storages for the training results and the model.
@@ -262,11 +261,11 @@ class AgentTraining:
             self.end_training = True
             print(f"\nReward threshold reached in {self.episode} episodes")
 
-        elif self.episode_reward >= reward_threshold:
-            self.end_training = True
+        # elif self.episode_reward >= reward_threshold:
+        #     self.end_training = True
         
         elif self.reward_moving_avg > reward_threshold:
-            print("Moving average reward is now {} and the last episode runs to {}!".format(self.reward_moving_avg, self.episode_reward))
+            print("Moving average reward is now {} and the last episode runs to {}".format(self.reward_moving_avg, self.episode_reward))
             self.end_training = True
 
         return self.end_training
@@ -342,6 +341,9 @@ class AgentTraining:
                 maximum_reward=self.maximum_reward
             )
         
+            self.save_training_results_to_file()
+            self.save_model_binary(self.agent.main_network)
+        
             self.end_training = self.check_end_training(
                 max_episodes=self.max_episodes,
                 reward_threshold=self.reward_threshold
@@ -370,9 +372,7 @@ class AgentTraining:
             self.observation, _ = self.env.reset()
             return True
 
-        early_stop = self.early_stop_episode()
-        if early_stop:
-            return early_stop
+        return early_stop if (early_stop := self.early_stop_episode()) else False
 
     def handle_nsteps(self,
             observation_tensor: torch.Tensor,
@@ -461,7 +461,7 @@ if __name__ == '__main__':
         'model_name': 'DQN',
         'model_type': 'DQN',
         'input_shape': 4,
-        'hidden_layers_dim': 256, #32
+        'hidden_layers_dim': 32, #32
         'epsilon_start': 1,
         'epsilon_decay': 0.995,
         'epsilon_end': 0.01,
@@ -471,13 +471,12 @@ if __name__ == '__main__':
         'episode_reward_threshold': -10,
         'network_update_frequency': 1,
         'network_sync_frequency': 100,
-        'learning_rate': 0.00025,#3.9e-5, 0.001,
+        'learning_rate': 0.00001,#3.9e-5, 0.001,
         'discount_factor': 0.99,
         'conv_params': [
             (4, 32, (8, 8), (4, 4)),
             (32, 64, (4, 4), (2, 2)),
-            (64, 256, (2, 2), (1, 1)),
-            # (64, 32, (2, 2), (1, 1)),
+            (64, 32, (2, 2), (1, 1)),
         ],
         'max_episodes': 1000,
         'n_steps': None,
