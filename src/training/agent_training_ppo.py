@@ -8,165 +8,18 @@ from memory_profiler import profile
 from typing import Any
 from datetime import datetime
 
-
 import gymnasium as gym
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributions import Beta
-from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
 from pathlib import Path
 MAIN_PATH = Path().resolve()
 sys.path.append(str(MAIN_PATH))
 
 from src.utils.network_models import PPO
+from src.utils.agents import PPOAgent
 from src.utils.buffers import ExperienceBuffer
+from src.utils.custom_wrappers import ContinuousEnvWrapper
 
-
-transition = np.dtype([('observation', np.float64, (4, 96, 96)), ('action', np.float64, (3,)), ('a_logp', np.float64),
-                       ('reward', np.float64), ('next_observation', np.float64, (4, 96, 96))])
-
-
-class Env(gym.Env):
-    """
-    Environment wrapper for CarRacing 
-    """
-
-    def __init__(self, skip_frames=8):
-        self.env = gym.make('CarRacing-v2')
-        self.reward_threshold = self.env.spec.reward_threshold
-        self.skip_frames = skip_frames
-
-    def reset(self):
-        self.counter = 0
-        self.av_r = self.reward_memory()
-
-        self.die = False
-        img_rgb, _ = self.env.reset()
-        img_gray = self.rgb2gray(img_rgb)
-        self.stack = [img_gray] * 4  # four frames for decision
-        return np.array(self.stack), {}
-
-    def step(self, action):
-        total_reward = 0
-        for i in range(self.skip_frames):
-            img_rgb, reward, die, _, _ = self.env.step(action)
-
-            # green penalty
-            if np.mean(img_rgb[:, :, 1]) > 185.0:
-                reward -= 0.05
-            total_reward += reward
-            # if no reward recently, end the episode
-            done = True if self.av_r(reward) <= -0.1 else False
-            if done or die:
-                break
-        img_gray = self.rgb2gray(img_rgb)
-        self.stack.pop(0)
-        self.stack.append(img_gray)
-        assert len(self.stack) == 4
-        return np.array(self.stack), total_reward, done, die, {}
-
-    def render(self, *arg):
-        self.env.render(*arg)
-
-    @staticmethod
-    def rgb2gray(rgb, norm=True):
-        # rgb image -> gray [0, 1]
-        gray = np.dot(rgb[...,:3], [0.299, 0.587, 0.114])
-        
-        if norm:
-            # normalize
-            gray = gray / 128. - 1.
-        return gray
-
-    @staticmethod
-    def reward_memory():
-        # record reward for last 100 steps
-        count = 0
-        length = 100
-        history = np.zeros(length)
-
-        def memory(reward):
-            nonlocal count
-            history[count] = reward
-            count = (count + 1) % length
-            return np.mean(history)
-
-        return memory
-
-
-@dataclass
-class PPOAgent:
-    network: nn.Module
-    max_grad_norm: float
-    clip_param: float
-    ppo_epoch: int
-    buffer_capacity: int
-    batch_size: int
-        
-    def __post_init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.net = self.network.double().to(self.device)
-        self.buffer = np.empty(self.buffer_capacity, dtype=transition)
-        self.counter = 0
-        self.update_loss = []
-
-    def select_action(self, observation: np.ndarray):
-        observation = torch.from_numpy(observation).double().to(self.device).unsqueeze(0)
-        with torch.no_grad():
-            alpha, beta = self.net(observation)[0]
-        dist = Beta(alpha, beta)
-        action = dist.sample()
-        a_logp = dist.log_prob(action).sum(dim=1)
-        action = action.squeeze().cpu().numpy()
-        a_logp = a_logp.item()
-        return action, a_logp
-
-    def store(self, transition):
-        self.buffer[self.counter] = transition
-        self.counter += 1
-        if self.counter == self.buffer_capacity:
-            self.counter = 0
-            return True
-        else:
-            return False
-
-    def calculate_loss_and_update(self, discount_factor: float):
-        observation = torch.tensor(self.buffer['observation'], dtype=torch.double).to(self.device)
-        action = torch.tensor(self.buffer['action'], dtype=torch.double).to(self.device)
-        reward = torch.tensor(self.buffer['reward'], dtype=torch.double).to(self.device).view(-1, 1)
-        next_observation = torch.tensor(self.buffer['next_observation'], dtype=torch.double).to(self.device)
-
-        old_a_logp = torch.tensor(self.buffer['a_logp'], dtype=torch.double).to(self.device).view(-1, 1)
-
-        with torch.no_grad():
-            target_v = reward + discount_factor * self.net(next_observation)[1]
-            adv = target_v - self.net(observation)[1]
-            # adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-
-        for _ in range(self.ppo_epoch):
-            for index in BatchSampler(SubsetRandomSampler(range(self.buffer_capacity)), self.batch_size, False):
-
-                alpha, beta = self.net(observation[index])[0]
-                dist = Beta(alpha, beta)
-                a_logp = dist.log_prob(action[index]).sum(dim=1, keepdim=True)
-                ratio = torch.exp(a_logp - old_a_logp[index])
-
-                surr1 = ratio * adv[index]
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv[index]
-                action_loss = -torch.min(surr1, surr2).mean()
-                value_loss = F.smooth_l1_loss(self.net(observation[index])[1], target_v[index])
-                loss = action_loss + 2. * value_loss
-
-                if self.device.type == 'cuda':
-                    self.update_loss.append(loss.cpu().detach().numpy())
-                else:
-                    self.update_loss.append(loss.detach().numpy())
-
-                self.net.optimizer.zero_grad()
-                loss.backward()
-                self.net.optimizer.step()
 
 class SetupStorage:
     """
@@ -384,9 +237,6 @@ class AgentTraining:
             self.end_training = True
             print(f"\nReward threshold reached in {self.episode} episodes")
 
-        elif self.episode_reward >= reward_threshold:
-            self.end_training = True
-
         elif self.reward_moving_avg > reward_threshold:
             print(f"Moving average reward is now {self.reward_moving_avg} and the last episode runs to {self.episode_reward}")
             self.end_training = True
@@ -427,7 +277,6 @@ class AgentTraining:
             self.episode += 1
             self.mean_reward = 0
             self.mean_loss = 0
-            print(self.agent.update_loss)
             self.save_training_results()
             self.agent.update_loss = []
             
@@ -452,10 +301,13 @@ class AgentTraining:
 
     def perform_action_step(self) -> bool:
         """Perform an action step in the environment."""
-
         action, a_logp = self.agent.select_action(self.observation)
         next_observation, reward, done, truncated, _ = self.env.step(action * np.array([2., 1., 1.]) + np.array([-1., 0., 0.]))
-        if self.agent.store((self.observation, action, a_logp, reward, next_observation)):
+
+        if action[1] > 0.5:
+            reward *= self.gas_weight
+
+        if self.agent.store_transition((self.observation, action, a_logp, reward, next_observation)):
             self.agent.calculate_loss_and_update(self.discount_factor)
         
         self.set_negative_reward_counter(reward)
@@ -464,7 +316,7 @@ class AgentTraining:
         if done or truncated:
             self.observation, _ = self.env.reset()
             return True
-        
+
         early_stop = self.early_stop_episode()
         if early_stop:
             return early_stop
@@ -531,26 +383,26 @@ if __name__ == "__main__":
     environment_params = {
         'environment_name': "CarRacing-v2", # Name of the environment
         'maximum_reward': -10000, # Initial value for the maximum reward
-        'skip_frames': 5, # Number of frames to skip
+        'skip_frames': 8, # Number of frames to skip
         'wait_frames': 50, # Number of frames to wait
         'stack_frames': 4, # Number of frames to stack
         'gas_weight': 4, # Weight for the gas action
         'env_params': {
             'render_mode': 'rgb_array',
-            'continuous': False, # Continuous or discrete action space
+            'continuous': True, # Continuous or discrete action space
         }
     }
     
     # Sets the buffer params
     buffer_params = {
-        'max_capacity': 2000,
+        'max_capacity': 100000,
         'batch_size': 128,
     }
     
-    # env = gym.make(
-    #     id=environment_params['environment_name'],
-    #     **environment_params['env_params']
-    # )
+    env = gym.make(
+        id=environment_params['environment_name'],
+        **environment_params['env_params']
+    )
     
     # env = CustomEnvWrapper(
     #     env,
@@ -558,7 +410,7 @@ if __name__ == "__main__":
     #     wait_frames=environment_params['wait_frames'],
     #     stack_frames=environment_params['stack_frames']
     # )
-    env = Env(skip_frames=environment_params['skip_frames'])
+    env = ContinuousEnvWrapper(env=env, skip_frames=environment_params['skip_frames'])
     
     environment_params.update({
         'reward_threshold': env.reward_threshold,
