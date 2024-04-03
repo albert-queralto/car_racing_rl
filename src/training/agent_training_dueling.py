@@ -358,7 +358,10 @@ class AgentTraining:
     def perform_action_step(self, mode: Mode) -> bool:
         """
         Performs an action step in the environment and updates the agent's network.
-        """     
+        """
+        # Increments the episode steps by 1
+        self.episode_steps += 1
+
         # Selects an action based on the mode and the observation
         action = self.select_action(mode, self.observation)
 

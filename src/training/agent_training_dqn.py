@@ -20,7 +20,7 @@ sys.path.append(str(MAIN_PATH))
 from src.utils.setup_dirs import setup_dirs
 from src.utils.custom_wrappers import CustomEnvWrapper
 from src.utils.buffers import ExperienceBuffer, ReplayBuffer, PrioritizedReplayBuffer
-from src.utils.agents import BaseAgent, DQNAgent
+from src.utils.agents import BaseAgent, DQNAgent, PriorityExperienceReplayMixin
 from src.utils.network_models import DQN
 
 setup_dirs(MAIN_PATH)
@@ -222,6 +222,7 @@ class AgentTraining:
         torch.save(model, file_path)
 
     def _convert_to_string(self, dictionary):
+        """Converts the elements of a dictionary to strings."""
         dictionary = dictionary.copy()
         for key, value in dictionary.items():
             dictionary[key] = str(value)
@@ -260,9 +261,6 @@ class AgentTraining:
         elif self.mean_reward >= reward_threshold:
             self.end_training = True
             print(f"\nReward threshold reached in {self.episode} episodes")
-
-        # elif self.episode_reward >= reward_threshold:
-        #     self.end_training = True
         
         elif self.reward_moving_avg > reward_threshold:
             print("Moving average reward is now {} and the last episode runs to {}".format(self.reward_moving_avg, self.episode_reward))
@@ -273,6 +271,7 @@ class AgentTraining:
     # @track_emissions
     @profile
     def train(self) -> None:
+        """Implements the training logic."""
         self._reset_training_variables()
         self._reset_episode_variables()
         self.info_printer.print_device_info(self.agent.device)
@@ -304,8 +303,10 @@ class AgentTraining:
         """
         Performs an episode in the environment and updates the agent's network.
         """
+        # Performs an action step in the environment and evaluates if the game is done
         self.is_gamedone = self.perform_action_step(mode=Mode.TRAIN)
-        
+
+        # Updates the agent's networks based on the update and sync frequencies
         self.agent.update_sync_networks(
             self.episode_steps,
             self.network_update_frequency,
@@ -314,20 +315,30 @@ class AgentTraining:
             self.buffer,
             self.batch_size
         )
-        
+
+        # Updates the time frames counter
         self.time_frame_counter += 1
+
+        # Calculates the moving average
         self.reward_moving_avg = self.reward_moving_avg * 0.99 + self.episode_reward * 0.01
-        
+
+        # Applies the logic when the game is finished
         if self.is_gamedone:
             self.episode += 1
             self.mean_reward = 0
             self.mean_loss = 0
+
+            # Saves the training results to a dictionary
             self.save_training_results()
             self.agent.update_loss = []
-            
+
+            # Updates epsilon based on the decay and minimum value
             self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_end)
+
+            # Updates the maximum reward
             self.maximum_reward = max(self.maximum_reward, self.mean_reward)
-        
+
+            # Prints the information on the screen
             self.info_printer.print_episode_info(
                 buffer=self.buffer,
                 episode=self.episode,
@@ -340,10 +351,12 @@ class AgentTraining:
                 epsilon=self.epsilon,
                 maximum_reward=self.maximum_reward
             )
-        
+
+            # Saves the results to a file
             self.save_training_results_to_file()
             self.save_model_binary(self.agent.main_network)
-        
+
+            # Checks if the conditions to finish the training are fulfilled or not
             self.end_training = self.check_end_training(
                 max_episodes=self.max_episodes,
                 reward_threshold=self.reward_threshold
@@ -351,19 +364,23 @@ class AgentTraining:
 
     def perform_action_step(self, mode: Mode) -> bool:
         """
-        Performs an action step in the environment and updates the agent's network.
-        """     
+        Performs an action step in the environment.
+        """
+        # Increments the episode steps by 1
+        self.episode_steps += 1
+
         # Selects an action based on the mode and the observation
         action = self.select_action(mode, self.observation)
 
         # Performs a step in the environment
         next_observation, instantaneous_reward, done, truncated, _ = self.env.step(action)
-        
+
         # Calculates the value of the negative reward counter and adjusts the
         # episode reward based on the instantaneous reward and the action taken
         self.set_negative_reward_counter(instantaneous_reward)
         self.adjust_episode_reward(instantaneous_reward, action)
 
+        # Handles the presence of n-steps in the Bellman equation if implemented
         self.handle_nsteps(self.observation, action, instantaneous_reward, done, next_observation)
 
         self.observation = next_observation.copy()
@@ -372,6 +389,7 @@ class AgentTraining:
             self.observation, _ = self.env.reset()
             return True
 
+        # Stops the episode early if the conditions are fulfilled
         return early_stop if (early_stop := self.early_stop_episode()) else False
 
     def handle_nsteps(self,
@@ -382,7 +400,7 @@ class AgentTraining:
             next_observation_tensor: torch.Tensor
         ):
         """
-        Handles the n-steps for the training.
+        Handles the use of n-steps in the Bellman equation during training.
         """
         if self.n_steps:
             self.agent.add_step(observation_tensor, action, reward, done, next_observation_tensor)
@@ -400,7 +418,7 @@ class AgentTraining:
         for observation, action, reward, done, next_observation in self.agent.steps:
             self.buffer.store_experience(observation, action, reward, done, next_observation)
         self.agent.reset()
-    
+
     def early_stop_episode(self) -> bool:
         """
         Stops the episode early if the negative reward counter surpasses a
@@ -413,11 +431,11 @@ class AgentTraining:
             ) or (self.episode_reward < self.episode_reward_threshold):
             return True
         return False
-    
+
     def set_negative_reward_counter(self, instantaneous_reward: float) -> None:
         """
         Sets the negative reward counter based on the instantaneous reward.
-        
+
         Based on the code from:
         https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
         """
@@ -431,7 +449,7 @@ class AgentTraining:
         """
         Adjusts the episode reward based on the instantaneous reward and the
         action taken.
-        
+
         Based on the code from:
         https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
         """
@@ -528,13 +546,13 @@ if __name__ == '__main__':
     })
     
     # Initialize the buffer, the model, the agent and the network updater
-    buffer = ReplayBuffer(max_capacity=buffer_params['max_capacity'])
-    # buffer = PrioritizedReplayBuffer(
-    #     max_capacity=buffer_params['max_capacity'],
-    #     alpha=buffer_params['alpha'],
-    #     beta=buffer_params['beta'],
-    #     beta_step=buffer_params['beta_step']
-    # )
+    # buffer = ReplayBuffer(max_capacity=buffer_params['max_capacity'])
+    buffer = PrioritizedReplayBuffer(
+        max_capacity=buffer_params['max_capacity'],
+        alpha=buffer_params['alpha'],
+        beta=buffer_params['beta'],
+        beta_step=buffer_params['beta_step']
+    )
 
     model = DQN(
         learning_rate=training_params['learning_rate'],
@@ -545,7 +563,8 @@ if __name__ == '__main__':
         activation_function=training_params['activation_function'],
     )
     
-    agent = DQNAgent(model)
+    # agent = DQNAgent(model)
+    agent = PriorityExperienceReplayMixin(model)
     
     # Initialize the training class
     trainer = AgentTraining(
@@ -559,3 +578,7 @@ if __name__ == '__main__':
 
     # Start the training
     trainer.train()
+
+    # End time
+    end_time = time.time()
+    print(f"\nTraining time: {end_time - start_time:.2f} seconds")
