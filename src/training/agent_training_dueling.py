@@ -310,8 +310,10 @@ class AgentTraining:
         """
         Performs an episode in the environment and updates the agent's network.
         """
+        # Performs an action step in the environment and evaluates if the game is done
         self.is_gamedone = self.perform_action_step(mode=Mode.TRAIN)
         
+        # Updates the agent's networks based on the update and sync frequencies
         self.agent.update_sync_networks(
             self.episode_steps,
             self.network_update_frequency,
@@ -321,19 +323,29 @@ class AgentTraining:
             self.batch_size
         )
         
+        # Updates the time frames counter
         self.time_frame_counter += 1
+        
+        # Calculates the moving reward
         self.reward_moving_avg = self.reward_moving_avg * 0.99 + self.episode_reward * 0.01
         
+        # Applies the logic when the game is finished
         if self.is_gamedone:
             self.episode += 1
             self.mean_reward = 0
             self.mean_loss = 0
+            
+            # Saves the training results to a dictionary
             self.save_training_results()
             self.agent.update_loss = []
             
+            # Updates epsilon based on the decay and minimum value
             self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_end)
+
+            # Updates the maximum reward
             self.maximum_reward = max(self.maximum_reward, self.mean_reward)
         
+            # Prints the information on the screen
             self.info_printer.print_episode_info(
                 buffer=self.buffer,
                 episode=self.episode,
@@ -347,9 +359,11 @@ class AgentTraining:
                 maximum_reward=self.maximum_reward
             )
         
+            # Saves the results to a file
             self.save_training_results_to_file()
             self.save_model_binary(self.agent.main_network)
         
+            # Checks if the conditions to finish the training are fulfilled or not
             self.end_training = self.check_end_training(
                 max_episodes=self.max_episodes,
                 reward_threshold=self.reward_threshold
@@ -373,6 +387,7 @@ class AgentTraining:
         self.set_negative_reward_counter(instantaneous_reward)
         self.adjust_episode_reward(instantaneous_reward, action)
 
+        # Handles the presence of n-steps in the Bellman equation if implemented
         self.handle_nsteps(self.observation, action, instantaneous_reward, done, next_observation)
 
         self.observation = next_observation.copy()
@@ -381,6 +396,7 @@ class AgentTraining:
             self.observation, _ = self.env.reset()
             return True
 
+        # Stops the episode early if the conditions are fulfilled
         return early_stop if (early_stop := self.early_stop_episode()) else False
 
     def handle_nsteps(self,

@@ -269,19 +269,27 @@ class AgentTraining:
                     break
 
     def perform_episode(self) -> None:
+        # Performs an action step in the environment and evaluates if the game is done
         self.is_gamedone = self.perform_action_step()
-        self.time_frame_counter += 1    
+        self.time_frame_counter += 1
+        
+        # Calculates the moving reward
         self.reward_moving_avg = self.reward_moving_avg * 0.99 + self.episode_reward * 0.01
 
+        # Applies the logic when the game is finished
         if self.is_gamedone:
             self.episode += 1
             self.mean_reward = 0
             self.mean_loss = 0
+            
+            # Saves the training results to a dictionary
             self.save_training_results()
             self.agent.update_loss = []
             
+            # Updates the maximum reward
             self.maximum_reward = max(self.maximum_reward, self.mean_reward)
             
+            # Prints the information on the screen
             self.info_printer.print_episode_info(
                 buffer=self.buffer,
                 episode=self.episode,
@@ -294,22 +302,34 @@ class AgentTraining:
                 maximum_reward=self.maximum_reward
             )
             
+            # Saves the results to a file
             self.save_training_results_to_file()
             self.save_model_binary(self.agent.net)
         
+            # Checks if the conditions to finish the training are fulfilled or not
             self.end_training = self.check_end_training(self.max_episodes, self.reward_threshold)
 
     def perform_action_step(self) -> bool:
         """Perform an action step in the environment."""
+        # Increments the episode steps by 1
+        self.episode_steps += 1
+
+        # Selects an action using a multiagent approach based on the beta distribution
         action, a_logp = self.agent.select_action(self.observation)
+
+        # Performs a step in the environment
         next_observation, reward, done, truncated, _ = self.env.step(action * np.array([2., 1., 1.]) + np.array([-1., 0., 0.]))
 
+        # Sets the reward if the gas action is higher than 0.5. Promotes acceleration
         if action[1] > 0.5:
             reward *= self.gas_weight
 
+        # Stores the results in the buffer, calculates the loss and updates the networks based on gradient descent
         if self.agent.store_transition((self.observation, action, a_logp, reward, next_observation)):
             self.agent.calculate_loss_and_update(self.discount_factor)
         
+        # Calculates the value of the negative reward counter and adjusts the
+        # episode reward based on the instantaneous reward and the action taken
         self.set_negative_reward_counter(reward)
         self.episode_reward += reward
         self.observation = next_observation.copy()
@@ -317,11 +337,9 @@ class AgentTraining:
             self.observation, _ = self.env.reset()
             return True
 
-        early_stop = self.early_stop_episode()
-        if early_stop:
-            return early_stop
+        # Stops the episode early if the conditions are fulfilled
+        return early_stop if (early_stop := self.early_stop_episode()) else False
 
-        return False
 
     def set_negative_reward_counter(self, instantaneous_reward: float) -> None:
         """
@@ -404,12 +422,6 @@ if __name__ == "__main__":
         **environment_params['env_params']
     )
     
-    # env = CustomEnvWrapper(
-    #     env,
-    #     skip_frames=environment_params['skip_frames'],
-    #     wait_frames=environment_params['wait_frames'],
-    #     stack_frames=environment_params['stack_frames']
-    # )
     env = ContinuousEnvWrapper(env=env, skip_frames=environment_params['skip_frames'])
     
     environment_params.update({

@@ -319,7 +319,7 @@ class AgentTraining:
         # Updates the time frames counter
         self.time_frame_counter += 1
 
-        # Calculates the moving average
+        # Calculates the moving reward
         self.reward_moving_avg = self.reward_moving_avg * 0.99 + self.episode_reward * 0.01
 
         # Applies the logic when the game is finished
