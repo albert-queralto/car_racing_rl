@@ -127,7 +127,6 @@ class PrioritizedReplayBuffer(ExperienceBuffer):
         action,
         reward,
         done,
-        truncated,
         next_observation
     ) -> None:
         max_priority = self._get_max_priority()
@@ -141,7 +140,6 @@ class PrioritizedReplayBuffer(ExperienceBuffer):
             action,
             reward,
             done,
-            truncated,
             next_observation
         )
         self.buffer.append(buffer)
@@ -154,7 +152,7 @@ class PrioritizedReplayBuffer(ExperienceBuffer):
 
         sampling_probs = self._calculate_sampling_probs()
         samples = random.choices(
-            sequence=range(len(self.buffer)),
+            population=range(len(self.buffer)),
             weights=sampling_probs,
             k=batch_size
         )
@@ -200,4 +198,24 @@ class PrioritizedReplayBuffer(ExperienceBuffer):
         Updates the priorities of the experiences at the given indices provided
         by the variable samples.
         """
-        self.priorities[samples] = priorities
+        self.priorities[samples] = priorities.squeeze()
+
+
+@dataclass
+class PPOReplayBuffer:
+    """
+    Class that implements a replay experience buffer.
+    """
+    capacity: int
+    def __post_init__(self):
+        self.buffer = deque(maxlen=self.capacity)
+
+    def store(self, transition):
+        self.buffer.append(transition)
+
+    def sample(self, batch_size):
+        batch = np.random.choice(self.buffer, batch_size, replace=True)
+        return np.array(batch)
+
+    def __len__(self):
+        return len(self.buffer)

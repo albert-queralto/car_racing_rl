@@ -5,7 +5,7 @@ are used to preprocess the observations, stack frames, and skip frames.
 The code is based on the Stable Baselines 3 Atari wrappers:
 - https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/atari_wrappers.py
 """
-
+import cv2
 import numpy as np
 import gymnasium as gym
 from src.utils.utils import preprocess_observation, stack_frames
@@ -140,4 +140,55 @@ class CustomEnvWrapper(gym.Wrapper):
         return self.env.step(action)
     
     
-    
+class ContinuousEnvWrapper:
+    """
+    Environment wrapper for the CarRacing environment and continuous
+    action space.
+
+    Based on the code from: https://github.com/xtma/pytorch_car_caring/
+    """
+
+    def __init__(self, env: gym.Env, skip_frames=8):
+        self.env = env
+        self.reward_threshold = env.spec.reward_threshold
+        self.skip_frames = skip_frames
+
+    def reset(self):
+        self.reward_buffer = []
+        img_rgb, _ = self.env.reset()
+        img_gray = self.rgb2gray_and_normalize(img_rgb)
+        self.stack = [img_gray] * 4  # four frames for decision
+        return np.array(self.stack), {}
+
+    def step(self, action):
+        total_reward = 0
+        done = False
+        truncated = False
+        for _ in range(self.skip_frames):
+            img_rgb, reward, truncated, _, _ = self.env.step(action)
+
+            # Grass penalty
+            if np.mean(img_rgb[:, :, 1]) > 185.0:
+                reward -= 0.05
+
+            total_reward += reward
+            self.reward_buffer.append(reward)
+            if len(self.reward_buffer) > 100:
+                self.reward_buffer.pop(0)
+            if done or truncated:
+                break
+
+        img_gray = self.rgb2gray_and_normalize(img_rgb)
+        self.stack.pop(0)
+        self.stack.append(img_gray)
+        assert len(self.stack) == 4
+        return np.array(self.stack), total_reward, done, truncated, {}
+
+    def render(self, *args):
+        self.env.render(*args)
+
+    @staticmethod
+    def rgb2gray_and_normalize(rgb_img):
+        gray_img = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY)
+        normalized_gray_img = gray_img / 255.0
+        return normalized_gray_img

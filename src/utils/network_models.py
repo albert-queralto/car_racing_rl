@@ -161,7 +161,8 @@ class DuelingDQN(nn.Module):
 
 class PPO(nn.Module):
     """
-    Actor-Critic Network for PPO
+    Actor-Critic Network for PPO.
+    Based on the code from: https://github.com/xtma/pytorch_car_caring/
     """
 
     def __init__(self,
@@ -185,6 +186,7 @@ class PPO(nn.Module):
         self.kernel_sizes = kernel_sizes
         self.strides = strides
         self.activation_function = activation_function
+        self.activation_fn = getattr(nn, self.activation_function)
         
         self.cnn_model = self._build_cnn_model()
         self._build_actor_critic()
@@ -192,28 +194,35 @@ class PPO(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
     
     def _build_actor_critic(self):
-        self.critic = nn.Sequential(nn.Linear(self.cnn_output_size, self.hidden_size), nn.ReLU(), nn.Linear(self.hidden_size, 1))
-        self.actor = nn.Sequential(nn.Linear(self.cnn_output_size, self.hidden_size), nn.ReLU())
-        self.alpha_head = nn.Sequential(nn.Linear(self.hidden_size, self.num_actions), nn.Softmax(dim=-1))
-        self.beta_head = nn.Sequential(nn.Linear(self.hidden_size, self.num_actions), nn.Softmax(dim=-1))
+        self.critic = nn.Sequential(nn.Linear(self.cnn_output_size, self.hidden_size), self.activation_fn(), nn.Linear(self.hidden_size, 1))
+        self.actor = nn.Sequential(nn.Linear(self.cnn_output_size, self.hidden_size), self.activation_fn())
+        self.alpha_head = nn.Sequential(nn.Linear(self.hidden_size, self.num_actions), nn.Softplus()) #nn.Softmax(dim=-1))
+        self.beta_head = nn.Sequential(nn.Linear(self.hidden_size, self.num_actions), nn.Softplus())#nn.Softmax(dim=-1))
+        self.apply(self._weights_init)
 
     def _build_cnn_model(self) -> None:
         assert len(self.layer_sizes) == len(self.kernel_sizes) == len(self.strides)
         
-        activation_fn = getattr(nn, self.activation_function)
+        
         network = []
         in_channels = self.input_shape
         for out_channels, kernel_size, stride in zip(self.layer_sizes, self.kernel_sizes, self.strides):
             network.extend([
                 nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride),
-                nn.ReLU()
+                self.activation_fn()
             ])
             in_channels = out_channels
 
         # Add final convolutional layer
         network.append(nn.Conv2d(self.layer_sizes[-1], self.cnn_output_size, self.kernel_sizes[-1], self.strides[-1]))
-        network.append(nn.ReLU())
+        network.append(self.activation_fn())
         return nn.Sequential(*network)
+
+    @staticmethod
+    def _weights_init(m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
+            nn.init.constant_(m.bias, 0.1)
 
     def forward(self, x):
         x = self.cnn_model(x)
