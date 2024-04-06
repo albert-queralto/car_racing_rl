@@ -35,6 +35,9 @@ class QuantumCNN(nn.Module):
         """
         if isinstance(x, np.ndarray):
             x = torch.from_numpy(x).float().to(device=self.device)
+        
+        # Flatten each sample in the batch
+        x = x.view(x.shape[0], -1)
         return self.qnn(x).to(self.device)
 
     def _build_quantum_network(self) -> None:

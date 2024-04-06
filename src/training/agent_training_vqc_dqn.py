@@ -1,24 +1,37 @@
 import os
-import sys
-from dataclasses import dataclass
-import numpy as np
 import json
-# from codecarbon import track_emissions
-from memory_profiler import profile
-from typing import Any
+import sys
+import time
+import numpy as np
 from datetime import datetime
-
 import gymnasium as gym
 import torch
+# from codecarbon import track_emissions
+from memory_profiler import profile
+
+from typing import Any
+from dataclasses import dataclass
+from enum import Enum
 
 from pathlib import Path
 MAIN_PATH = Path().resolve()
 sys.path.append(str(MAIN_PATH))
 
-from src.utils.network_models import PPO
-from src.utils.agents import PPOAgent
-from src.utils.buffers import ExperienceBuffer
-from src.utils.custom_wrappers import ContinuousEnvWrapper
+from src.utils.setup_dirs import setup_dirs
+from src.utils.custom_wrappers import CustomEnvWrapper
+from src.utils.buffers import ExperienceBuffer, ReplayBuffer, PrioritizedReplayBuffer
+from src.utils.agents import BaseAgent, DQNAgent
+from src.utils.quantum_network_models import QuantumCNN
+
+setup_dirs(MAIN_PATH)
+
+
+class Mode(Enum):
+    """
+    Enum class to define the mode of the action.
+    """
+    EXPLORATION = 1
+    TRAIN = 2
 
 
 class SetupStorage:
@@ -41,16 +54,16 @@ class SetupStorage:
         n_step_key = ['n_steps']
 
         training_results_keys = [
-            'episode', 'time_frame_counter', 'reward_moving_avg',
-            'episode_steps', 'episode_reward', 'average_rewards', 'loss_evolution',
+            'epsilon', 'episode', 'time_frame_counter', 'reward_moving_avg',
+            'episode_steps', 'episode_reward', 'average_rewards', 'loss_evolution'
         ]
         
         model_store_keys = [
             'model_date', 'model_name', 'model_type', 'environment_name',
             'environment_type', 'environment_params', 'hidden_layers_dim',
             'maximum_reward', 'skip_frames', 'wait_frames', 'stack_frames',
-            'batch_size', 'learning_rate', 'discount_factor', 
-            'nblock', 'network_update_frequency',
+            'batch_size', 'learning_rate', 'discount_factor', 'epsilon_start',
+            'epsilon_decay', 'epsilon_end', 'nblock', 'network_update_frequency',
             'network_sync_frequency', 'max_episodes', 'activation_function',
             'optimizer', 'time_frame_counter_threshold', 'instantaneous_reward_threshold',
             'negative_reward_counter_threshold', 'episode_reward_threshold',
@@ -93,6 +106,7 @@ class InfoPrinter:
             reward_moving_avg: float,
             mean_reward: float,
             mean_loss: float,
+            epsilon: float,
             maximum_reward: float,
         ) -> None:
         """
@@ -104,9 +118,10 @@ class InfoPrinter:
             f"Episode: {episode}/{max_episodes} "
             f"- Time Frames: {time_frame_counter} "
             f"- Episode Reward: {episode_reward:.2f} "
-            f"- Moving Average: {reward_moving_avg:.2f} "
+            f"- Moving Avg: {reward_moving_avg:.2f} "
             f"- Mean Reward: {mean_reward:.2f} "
             f"- Loss: {mean_loss:.2f} "
+            f"- Epsilon: {epsilon:.3f} "
             f"- Max Reward: {maximum_reward:.2f}"
         )
 
@@ -122,19 +137,27 @@ class InfoPrinter:
         print(f"Device: {device}")
 
 
+
 @dataclass
 class AgentTraining:
-    agent: PPOAgent
+    agent: BaseAgent
     env: gym.Env
-    buffer: Any
+    buffer: ExperienceBuffer
     training_params: dict[str, Any]
     environment_params: dict[str, Any]
     buffer_params: dict[str, Any]
-    
+
     def __post_init__(self) -> None:
+        # Unpacks the parameters from the dictionaries and creates the variables
         self._unpack_params()
+
+        # Automatic device selection
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Initializes the info printer
         self.info_printer = InfoPrinter()
+
+        # Initializes the dictionaries for the training results and the model store
         self.training_results, self.model_store = SetupStorage().initialize_dictionaries()
 
     def _reset_training_variables(self) -> None:
@@ -142,6 +165,7 @@ class AgentTraining:
         Resets the variables used during network training.
         """
         self.model_date = str(datetime.now())
+        self.epsilon = self.epsilon_start
         self.episode = 0
         self.end_training = False
         self.reward_moving_avg = 0
@@ -150,7 +174,7 @@ class AgentTraining:
         """
         Resets the variables used in each episode.
         """
-        self.observation, _ = self.env.reset()
+        self.observation, _ = self.env.reset() # Grayscale and stacked image (4, 84, 84)
         self.episode_reward = 0
         self.episode_steps = 0
         self.is_gamedone = False
@@ -170,8 +194,8 @@ class AgentTraining:
         Saves the training results in the training_results dictionary.
         """
         attribute_names = [
-            'episode', 'time_frame_counter',
-            'episode_steps', 'episode_reward', 'reward_moving_avg'
+            'epsilon', 'episode', 'time_frame_counter', 'reward_moving_avg',
+            'episode_steps', 'episode_reward'
         ]
 
         for attr_name in attribute_names:
@@ -198,6 +222,7 @@ class AgentTraining:
         torch.save(model, file_path)
 
     def _convert_to_string(self, dictionary):
+        """Converts the elements of a dictionary to strings."""
         dictionary = dictionary.copy()
         for key, value in dictionary.items():
             dictionary[key] = str(value)
@@ -236,9 +261,9 @@ class AgentTraining:
         elif self.mean_reward >= reward_threshold:
             self.end_training = True
             print(f"\nReward threshold reached in {self.episode} episodes")
-
+        
         elif self.reward_moving_avg > reward_threshold:
-            print(f"Moving average reward is now {self.reward_moving_avg} and the last episode runs to {self.episode_reward}")
+            print("Moving average reward is now {} and the last episode runs to {}".format(self.reward_moving_avg, self.episode_reward))
             self.end_training = True
 
         return self.end_training
@@ -246,15 +271,21 @@ class AgentTraining:
     # @track_emissions
     @profile
     def train(self) -> None:
+        """Implements the training logic."""
         self._reset_training_variables()
         self._reset_episode_variables()
         self.info_printer.print_device_info(self.agent.device)
         
-        # for i_ep in range(100000):
+        print("Filling replay buffer with experiences...")
+        self.info_printer.print_training_info(self.training_params)
+        
+        # Fill the buffer with experiences in order to start the training
+        while not self.buffer.is_ready(batch_size=self.batch_size):
+            self.perform_action_step(Mode.EXPLORATION)
+
         while not self.end_training:
             self._reset_episode_variables()
 
-            # for t in range(self.max_steps):
             while not self.is_gamedone:
                 self.perform_episode()
                 if self.end_training:
@@ -265,14 +296,29 @@ class AgentTraining:
                     # parameters and the model binary
                     self.save_training_results_to_file()
                     self.save_model_params_to_file()
-                    self.save_model_binary(self.agent.net)
+                    self.save_model_binary(self.agent.main_network)
                     break
-
-    def perform_episode(self) -> None:
-        # Performs an action step in the environment and evaluates if the game is done
-        self.is_gamedone = self.perform_action_step()
-        self.time_frame_counter += 1
         
+    def perform_episode(self) -> None:
+        """
+        Performs an episode in the environment and updates the agent's network.
+        """
+        # Performs an action step in the environment and evaluates if the game is done
+        self.is_gamedone = self.perform_action_step(mode=Mode.TRAIN)
+
+        # Updates the agent's networks based on the update and sync frequencies
+        self.agent.update_sync_networks(
+            self.episode_steps,
+            self.network_update_frequency,
+            self.network_sync_frequency,
+            self.discount_factor,
+            self.buffer,
+            self.batch_size
+        )
+
+        # Updates the time frames counter
+        self.time_frame_counter += 1
+
         # Calculates the moving reward
         self.reward_moving_avg = self.reward_moving_avg * 0.99 + self.episode_reward * 0.01
 
@@ -281,14 +327,17 @@ class AgentTraining:
             self.episode += 1
             self.mean_reward = 0
             self.mean_loss = 0
-            
+
             # Saves the training results to a dictionary
             self.save_training_results()
             self.agent.update_loss = []
-            
+
+            # Updates epsilon based on the decay and minimum value
+            self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_end)
+
             # Updates the maximum reward
             self.maximum_reward = max(self.maximum_reward, self.mean_reward)
-            
+
             # Prints the information on the screen
             self.info_printer.print_episode_info(
                 buffer=self.buffer,
@@ -299,40 +348,43 @@ class AgentTraining:
                 reward_moving_avg=self.reward_moving_avg,
                 mean_reward=self.mean_reward,
                 mean_loss=self.mean_loss,
+                epsilon=self.epsilon,
                 maximum_reward=self.maximum_reward
             )
-            
+
             # Saves the results to a file
             self.save_training_results_to_file()
-            self.save_model_binary(self.agent.net)
-        
-            # Checks if the conditions to finish the training are fulfilled or not
-            self.end_training = self.check_end_training(self.max_episodes, self.reward_threshold)
+            # self.save_model_binary(self.agent.main_network)
 
-    def perform_action_step(self) -> bool:
-        """Perform an action step in the environment."""
+            # Checks if the conditions to finish the training are fulfilled or not
+            self.end_training = self.check_end_training(
+                max_episodes=self.max_episodes,
+                reward_threshold=self.reward_threshold
+            )
+
+    def perform_action_step(self, mode: Mode) -> bool:
+        """
+        Performs an action step in the environment.
+        """
         # Increments the episode steps by 1
         self.episode_steps += 1
 
-        # Selects an action using a multiagent approach based on the beta distribution
-        action, a_logp = self.agent.select_action(self.observation)
+        # Selects an action based on the mode and the observation
+        action = self.select_action(mode, self.observation)
 
         # Performs a step in the environment
-        next_observation, reward, done, truncated, _ = self.env.step(action * np.array([2., 1., 1.]) + np.array([-1., 0., 0.]))
+        next_observation, instantaneous_reward, done, truncated, _ = self.env.step(action)
 
-        # Sets the reward if the gas action is higher than 0.5. Promotes acceleration
-        if action[1] > 0.5:
-            reward *= self.gas_weight
-
-        # Stores the results in the buffer, calculates the loss and updates the networks based on gradient descent
-        if self.agent.store_transition((self.observation, action, a_logp, reward, next_observation)):
-            self.agent.calculate_loss_and_update(self.discount_factor)
-        
         # Calculates the value of the negative reward counter and adjusts the
         # episode reward based on the instantaneous reward and the action taken
-        self.set_negative_reward_counter(reward)
-        self.episode_reward += reward
+        self.set_negative_reward_counter(instantaneous_reward)
+        self.adjust_episode_reward(instantaneous_reward, action)
+
+        # Handles the presence of n-steps in the Bellman equation if implemented
+        self.handle_nsteps(self.observation, action, instantaneous_reward, done, next_observation)
+
         self.observation = next_observation.copy()
+
         if done or truncated:
             self.observation, _ = self.env.reset()
             return True
@@ -340,19 +392,32 @@ class AgentTraining:
         # Stops the episode early if the conditions are fulfilled
         return early_stop if (early_stop := self.early_stop_episode()) else False
 
+    def handle_nsteps(self,
+            observation_tensor: torch.Tensor,
+            action: np.ndarray, 
+            reward: float, 
+            done: bool, 
+            next_observation_tensor: torch.Tensor
+        ):
+        """
+        Handles the use of n-steps in the Bellman equation during training.
+        """
+        if self.n_steps:
+            self.agent.add_step(observation_tensor, action, reward, done, next_observation_tensor)
+            if self.agent.completed():
+                self.complete_n_step_rollout()
 
-    def set_negative_reward_counter(self, instantaneous_reward: float) -> None:
-        """
-        Sets the negative reward counter based on the instantaneous reward.
-        
-        Based on the code from:
-        https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
-        """
-        if (self.time_frame_counter > self.time_frame_counter_threshold
-            ) and (instantaneous_reward < self.instantaneous_reward_threshold):
-            self.negative_reward_counter += 1
         else:
-            self.negative_reward_counter = 0
+            self.buffer.store_experience(observation_tensor, action, reward, done, next_observation_tensor)
+
+    def complete_n_step_rollout(self):
+        """
+        Completes n-step rollout and stores experiences in the buffer.
+        """
+        self.agent.n_step_roll_out_collapse(gamma=self.discount_factor)
+        for observation, action, reward, done, next_observation in self.agent.steps:
+            self.buffer.store_experience(observation, action, reward, done, next_observation)
+        self.agent.reset()
 
     def early_stop_episode(self) -> bool:
         """
@@ -367,30 +432,71 @@ class AgentTraining:
             return True
         return False
 
+    def set_negative_reward_counter(self, instantaneous_reward: float) -> None:
+        """
+        Sets the negative reward counter based on the instantaneous reward.
+
+        Based on the code from:
+        https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
+        """
+        if (self.time_frame_counter > self.time_frame_counter_threshold
+            ) and (instantaneous_reward < self.instantaneous_reward_threshold):
+            self.negative_reward_counter += 1
+        else:
+            self.negative_reward_counter = 0
+
+    def adjust_episode_reward(self, instantaneous_reward: float, action: int) -> None:
+        """
+        Adjusts the episode reward based on the instantaneous reward and the
+        action taken.
+
+        Based on the code from:
+        https://github.com/matteoprata/DeepRL-Class/blob/main/src/main_train.py
+        """
+        if action == 3:
+            instantaneous_reward *= self.gas_weight
+
+        self.episode_reward += instantaneous_reward
+
+    def select_action(self, mode: Mode, observation: np.ndarray) -> int:
+        """Selects an action based on the mode and the observation."""
+        if mode == Mode.TRAIN:
+            return self.agent.select_action(
+                environment=self.env,
+                network=self.agent.main_network,
+                observation=observation,
+                epsilon=self.epsilon,
+            )
+        return self.env.action_space.sample()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    # Start time
+    start_time = time.time()
+
     # Sets the training params
     training_params = {
-        'model_name': 'PPO',
-        'input_shape': 4,
-        'cnn_output_size': 256,
-        'hidden_layers_dim': 256,
-        'num_actions': 3,
-        'layer_sizes': [8, 16, 32, 64, 128],
-        'kernel_sizes': [4, 3, 3, 3, 3],
-        'strides': [2, 2, 2, 2, 1],
-        'max_grad_norm': 0.5,
-        'clip_param': 0.1,
-        'ppo_epoch': 10,
+        'model_name': 'DQN',
+        'model_type': 'DQN',
+        'n_qubits': 4,
+        'n_layers': 32, #32
+        'epsilon_start': 1,
+        'epsilon_decay': 0.995,
+        'epsilon_end': 0.01,
         'time_frame_counter_threshold': 100,
         'instantaneous_reward_threshold': 0,
         'negative_reward_counter_threshold': 50,
         'episode_reward_threshold': -10,
-        'learning_rate': 0.0001,#3.9e-5, 
+        'network_update_frequency': 1,
+        'network_sync_frequency': 100,
+        'learning_rate': 0.00001,#3.9e-5, 0.001,
         'discount_factor': 0.99,
-        'max_episodes': 100000,
-        'max_steps': 1000,
+        'conv_params': [
+            (4, 32, (8, 8), (4, 4)),
+            (32, 64, (4, 4), (2, 2)),
+            (64, 32, (2, 2), (1, 1)),
+        ],
+        'max_episodes': 1000,
         'n_steps': None,
         'activation_function': 'ReLU',
         'optimizer': 'Adam',
@@ -400,21 +506,25 @@ if __name__ == "__main__":
     # Sets the environment params
     environment_params = {
         'environment_name': "CarRacing-v2", # Name of the environment
+        'environment_type': 'Gym', # Type of environment
         'maximum_reward': -10000, # Initial value for the maximum reward
-        'skip_frames': 8, # Number of frames to skip
+        'skip_frames': 5, # Number of frames to skip
         'wait_frames': 50, # Number of frames to wait
         'stack_frames': 4, # Number of frames to stack
         'gas_weight': 4, # Weight for the gas action
         'env_params': {
             'render_mode': 'rgb_array',
-            'continuous': True, # Continuous or discrete action space
+            'continuous': False, # Continuous or discrete action space
         }
     }
     
     # Sets the buffer params
     buffer_params = {
         'max_capacity': 100000,
-        'batch_size': 128,
+        'batch_size': 64,
+        'alpha': 0.6,
+        'beta': 0.4,
+        'beta_step': 0.001
     }
     
     env = gym.make(
@@ -422,42 +532,43 @@ if __name__ == "__main__":
         **environment_params['env_params']
     )
     
-    env = ContinuousEnvWrapper(env=env, skip_frames=environment_params['skip_frames'])
+    env = CustomEnvWrapper(
+        env,
+        skip_frames=environment_params['skip_frames'],
+        wait_frames=environment_params['wait_frames'],
+        stack_frames=environment_params['stack_frames']
+    )
     
     environment_params.update({
-        'reward_threshold': env.reward_threshold,
-        # 'action_space': env.action_space.n,
+        'reward_threshold': env.spec.reward_threshold,
+        'action_space': env.action_space.n,
         'observation_space_shape': (4, 84, 84),
     })
+    
+    # Initialize the buffer, the model, the agent and the network updater
+    buffer = ReplayBuffer(max_capacity=buffer_params['max_capacity'])
 
-    model = PPO(
-        input_shape=training_params['input_shape'],
-        cnn_output_size=training_params['cnn_output_size'],
-        hidden_size=training_params['hidden_layers_dim'],
-        num_actions=training_params['num_actions'],
-        learning_rate=training_params['learning_rate'],
-        layer_sizes=training_params['layer_sizes'],
-        kernel_sizes=training_params['kernel_sizes'],
-        strides=training_params['strides'],
-        activation_function=training_params['activation_function'],
+    model = QuantumCNN(
+        n_qubits=training_params['n_qubits'],
+        n_layers=training_params['n_layers'],
+        learning_rate=training_params['learning_rate']
     )
     
-    agent = PPOAgent(
-        network=model,
-        max_grad_norm=training_params['max_grad_norm'],
-        clip_param=training_params['clip_param'],
-        ppo_epoch=training_params['ppo_epoch'],
-        buffer_capacity=buffer_params['max_capacity'],
-        batch_size=buffer_params['batch_size']
-    )
-
+    agent = DQNAgent(model)
+    
+    # Initialize the training class
     trainer = AgentTraining(
-        agent=agent,
+        agent = agent,
         env=env,
-        buffer=None,
+        buffer=buffer,
         training_params=training_params,
         environment_params=environment_params,
         buffer_params=buffer_params
     )
 
+    # Start the training
     trainer.train()
+
+    # End time
+    end_time = time.time()
+    print(f"\nTraining time: {end_time - start_time:.2f} seconds")
