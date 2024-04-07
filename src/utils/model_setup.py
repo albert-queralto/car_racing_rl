@@ -46,3 +46,24 @@ def linear_model(
     ]
 
     return nn.Sequential(*fc_layers)
+
+
+def quantum_linear_model(
+        input_size: int,
+        output_size: int,
+        hidden_layer_dim: int,
+        activation_function: nn.Module = nn.ReLU
+    ) -> nn.Sequential:
+    """
+    Creates a fully connected neural network with ReLU activation functions.
+    """
+    activation_func = getattr(nn, activation_function)
+
+    # Define fully connected layers
+    fc_layers = [
+        nn.Linear(input_size, hidden_layer_dim),
+        activation_func(),
+        nn.Linear(hidden_layer_dim, output_size)
+    ]
+
+    return nn.Sequential(*fc_layers)

@@ -15,7 +15,7 @@ class DQN(nn.Module):
     def __init__(
             self,
             learning_rate: float,
-            input_shape: int,
+            input_shape: np.ndarray,
             output_size: int,
             hidden_layers_dim: int,
             conv_params: list[tuple[int, int, tuple[int, int], tuple[int, int]]],
@@ -44,8 +44,8 @@ class DQN(nn.Module):
         if type(observation) is np.ndarray:
             observation = torch.from_numpy(observation).float().to(device=self.device)
         features = self.cnn_model(observation.to(self.device)).reshape(-1,  self.fc_layer_input_size)
-
-        return self.linear_model(features)
+        q_values = self.linear_model(features)
+        return q_values
 
     def _build_network(self) -> None:
         """Builds the neural network model."""

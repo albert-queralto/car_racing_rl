@@ -20,7 +20,7 @@ sys.path.append(str(MAIN_PATH))
 from src.utils.setup_dirs import setup_dirs
 from src.utils.custom_wrappers import CustomEnvWrapper
 from src.utils.buffers import ExperienceBuffer, ReplayBuffer, PrioritizedReplayBuffer
-from src.utils.agents import BaseAgent, DQNAgent
+from src.utils.quantum_agents import BaseAgent, DQNAgent
 from src.utils.quantum_network_models import QuantumCNN
 
 setup_dirs(MAIN_PATH)
@@ -480,6 +480,7 @@ if __name__ == '__main__':
         'model_type': 'DQN',
         'n_qubits': 4,
         'n_layers': 32, #32
+        'hidden_layer_dim': 256,
         'epsilon_start': 1,
         'epsilon_decay': 0.995,
         'epsilon_end': 0.01,
@@ -489,7 +490,7 @@ if __name__ == '__main__':
         'episode_reward_threshold': -10,
         'network_update_frequency': 1,
         'network_sync_frequency': 100,
-        'learning_rate': 0.00001,#3.9e-5, 0.001,
+        'learning_rate': 0.0001,#3.9e-5, 0.001,
         'discount_factor': 0.99,
         'conv_params': [
             (4, 32, (8, 8), (4, 4)),
@@ -549,9 +550,13 @@ if __name__ == '__main__':
     buffer = ReplayBuffer(max_capacity=buffer_params['max_capacity'])
 
     model = QuantumCNN(
+        input_shape=environment_params['observation_space_shape'],
         n_qubits=training_params['n_qubits'],
         n_layers=training_params['n_layers'],
-        learning_rate=training_params['learning_rate']
+        learning_rate=training_params['learning_rate'],
+        output_size=environment_params['action_space'],
+        hidden_layer_dim=training_params['hidden_layer_dim'],
+        activation_function=training_params['activation_function'],
     )
     
     agent = DQNAgent(model)
