@@ -2,7 +2,7 @@ import numpy as np
 import pennylane as qml
 from pennylane import numpy as pnp
 from pennylane.templates import RandomLayers
-from typing import Optional
+from typing import Optional, Any
 
 import torch
 import torch.nn as nn
@@ -69,14 +69,15 @@ class QuantumCNN(nn.Module):
         q_device = qml.device("default.qubit.torch", wires=self.n_qubits, torch_device='cuda')
 
         @qml.qnode(q_device, interface='torch')
-        def _quantum_circuit(inputs: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        def _quantum_circuit1(inputs: torch.Tensor, weights: dict[str, Any]) -> torch.Tensor:
             """
             Quantum circuit for the quantum neural network.
             """
-            x = inputs.to(self.device)
-
+            x = inputs * np.pi
+            x = x.to(self.device)
             for i in range(self.n_qubits):
                 qml.RY(x[i], wires=i)
+                qml.RZ(x[i], wires=i)
                 qml.Hadamard(wires=i)
                 qml.CNOT(wires=[i, (i + 1) % self.n_qubits])
 
@@ -85,9 +86,53 @@ class QuantumCNN(nn.Module):
             expvals = [qml.expval(qml.PauliZ(i)) for i in range(self.n_qubits)]
 
             return expvals
+        
+        def _quantum_circuit2(inputs: torch.Tensor, weights: dict[str, Any]) -> torch.Tensor:
+            """
+            Quantum circuit for the quantum neural network.
+            """
+            x = inputs * np.pi
+            x = x.to(self.device)
+            for _ in range(self.n_layers):
+                for i in range(self.n_qubits):
+                    qml.RY(x[i], wires=i)
+                    qml.RZ(x[i], wires=i)
+                    qml.CNOT(wires=[i, (i + 1) % self.n_qubits])
+                    qml.RZ(x[i], wires=i)
+
+            RandomLayers(weights, wires=list(range(self.n_qubits)))
+
+            expvals = [qml.expval(qml.PauliZ(i)) for i in range(self.n_qubits)]
+
+            return expvals
+        
+        def _quantum_circuit3(inputs: torch.Tensor, weights: dict[str, Any]) -> torch.Tensor:
+            """
+            Quantum circuit for the quantum neural network.
+            """
+            x = inputs * np.pi
+            x = x.to(self.device)
+            for _ in range(self.n_layers):
+                for i in range(self.n_qubits):
+                    qml.RY(x[i], wires=i)
+                    qml.RZ(x[i], wires=i)
+                    qml.CNOT(wires=[i, (i + 1) % self.n_qubits])
+                    qml.RY(x[i], wires=i)
+                    qml.RZ(x[i], wires=i)
+                    qml.CNOT(wires=[i, (i + 1) % self.n_qubits])
+                    qml.RY(x[i], wires=i)
+                    qml.RZ(x[i], wires=i)
+                    qml.CNOT(wires=[i, (i + 1) % self.n_qubits])
+                    qml.RZ(x[i], wires=i)
+
+            RandomLayers(weights, wires=list(range(self.n_qubits)))
+
+            expvals = [qml.expval(qml.PauliZ(i)) for i in range(self.n_qubits)]
+
+            return expvals
 
         self.qnn = qml.qnn.TorchLayer(
-            _quantum_circuit,
+            _quantum_circuit1,
             self._weight_shapes()
         )
 

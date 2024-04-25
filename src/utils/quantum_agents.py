@@ -129,8 +129,8 @@ class DQNAgent(BaseAgent):
                 )
 
             return torch.nn.MSELoss()(q_values, target_q_values.unsqueeze(1))
-    
-    
+
+
 @dataclass
 class DuelingDQNAgent(BaseAgent):
     """Implements the Agent to solve an environment using a Dueling Deep
@@ -181,81 +181,6 @@ class DuelingDQNAgent(BaseAgent):
                 )
 
             return torch.nn.MSELoss()(q_values, expected_q_values)
-
-
-@dataclass
-class PriorityExperienceReplayMixin(BaseAgent):
-    """Mixin class to add the priority experience replay functionality to the
-    DQNAgent and DuelingDQNAgent classes."""
-
-    def update_sync_networks(self,
-            episode_steps: int, 
-            update_frequency: int,
-            sync_frequency: int,
-            gamma: float,
-            buffer: ReplayBuffer,
-            batch_size: int
-        ) -> None:
-        """
-        Updates the main_network if the number of episode_steps is divisible by
-        the update_frequency, and syncs the target_network with the
-        main_network if the number of episode_steps is divisible by the
-        sync_frequency.
-        """
-        if episode_steps % update_frequency == 0:
-            self.main_network.optimizer.zero_grad()
-            # Gets the batch as well as the weights and batch indices
-            batch, weights, samples = buffer.random_sample(batch_size)
-            # Calculates the loss and priorities based on the batch, weights and gamma
-            loss, sample_priorities = self.calculate_loss(batch, gamma, weights)
-            buffer.update_priorities(samples, sample_priorities)
-            loss.backward()
-            self.main_network.optimizer.step()
-
-            if self.device.type == 'cuda':
-                self.update_loss.append(loss.cpu().detach().numpy())
-            else:
-                self.update_loss.append(loss.detach().numpy())
-                    
-        if episode_steps % sync_frequency == 0:
-            self.target_network.load_state_dict(self.main_network.state_dict())
-
-    def calculate_loss(self,
-            batch: list,
-            discount_factor: float,
-            weights: np.ndarray
-        ) -> tuple[float, np.ndarray]:
-        observations, actions, rewards, dones, next_observations = [i for i in batch]
-        rewards_vals = torch.FloatTensor(rewards).to(device=self.device).reshape(-1,1)
-        actions_vals = torch.LongTensor(np.array(actions)).to(device=self.device).reshape(-1,1)
-        dones_t = torch.ByteTensor(dones).to(device=self.device)
-        weights = torch.FloatTensor(np.array(weights, copy=False)).to(self.device)
-        
-        q_values = torch.gather(
-            self._calculate_qvalues(self.main_network, observations), 1, actions_vals)
-        
-        next_actions = torch.max(self._calculate_qvalues(self.main_network, 
-                                                next_observations), dim=-1)[1]
-
-        if self.device.type == 'cuda':
-            next_action_vals = next_actions.reshape(-1,1).to(device=self.device)
-        else:
-            next_action_vals = torch.LongTensor(next_actions.cpu()).reshape(-1,1).to(
-                device=self.device)
-        
-        target_qvalues = self._calculate_qvalues(self.target_network, next_observations)
-        next_q_values = torch.gather(target_qvalues, 1, next_action_vals).detach()
-        max_next_q_values = next_q_values.max(dim=-1)[0]
-        
-        # Calculates the expected Q values using the 1-step Bellman equation    
-        expected_q_values = (rewards_vals + 
-                    discount_factor * (1 - dones_t) * max_next_q_values)
-        
-        loss = torch.nn.MSELoss()(q_values, expected_q_values)
-        weighted_loss = torch.mul(weights, loss).reshape(-1, 1)
-        sample_priorities = (weighted_loss + 1e-6).data.cpu().numpy()
-
-        return weighted_loss.mean(), sample_priorities
 
 
 @dataclass

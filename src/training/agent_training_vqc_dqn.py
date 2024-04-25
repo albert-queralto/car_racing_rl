@@ -19,7 +19,7 @@ sys.path.append(str(MAIN_PATH))
 
 from src.utils.setup_dirs import setup_dirs
 from src.utils.custom_wrappers import CustomEnvWrapper
-from src.utils.buffers import ExperienceBuffer, ReplayBuffer, PrioritizedReplayBuffer
+from src.utils.buffers import ExperienceBuffer, ReplayBuffer
 from src.utils.quantum_agents import BaseAgent, DQNAgent
 from src.utils.quantum_network_models import QuantumCNN
 
@@ -60,14 +60,15 @@ class SetupStorage:
         
         model_store_keys = [
             'model_date', 'model_name', 'model_type', 'environment_name',
-            'environment_type', 'environment_params', 'hidden_layers_dim',
+            'environment_type', 'environment_params', 'n_qubits', 'n_layers',
+            'hidden_layers_dim',
             'maximum_reward', 'skip_frames', 'wait_frames', 'stack_frames',
             'batch_size', 'learning_rate', 'discount_factor', 'epsilon_start',
             'epsilon_decay', 'epsilon_end', 'nblock', 'network_update_frequency',
             'network_sync_frequency', 'max_episodes', 'activation_function',
             'optimizer', 'time_frame_counter_threshold', 'instantaneous_reward_threshold',
             'negative_reward_counter_threshold', 'episode_reward_threshold',
-            'conv_params', 'gas_weight'
+            'gas_weight'
         ] + buffer_keys + n_step_key
 
         # Initializes the training_results and model_store dictionaries using
@@ -474,12 +475,14 @@ if __name__ == '__main__':
     # Start time
     start_time = time.time()
 
+    torch.cuda.empty_cache()
+
     # Sets the training params
     training_params = {
         'model_name': 'DQN',
         'model_type': 'DQN',
-        'n_qubits': 4,
-        'n_layers': 32, #32
+        'n_qubits': 6,
+        'n_layers': 32,
         'hidden_layer_dim': 256,
         'epsilon_start': 1,
         'epsilon_decay': 0.995,
@@ -490,13 +493,8 @@ if __name__ == '__main__':
         'episode_reward_threshold': -10,
         'network_update_frequency': 1,
         'network_sync_frequency': 100,
-        'learning_rate': 0.0001,#3.9e-5, 0.001,
+        'learning_rate': 0.0001,
         'discount_factor': 0.99,
-        'conv_params': [
-            (4, 32, (8, 8), (4, 4)),
-            (32, 64, (4, 4), (2, 2)),
-            (64, 32, (2, 2), (1, 1)),
-        ],
         'max_episodes': 1000,
         'n_steps': None,
         'activation_function': 'ReLU',
