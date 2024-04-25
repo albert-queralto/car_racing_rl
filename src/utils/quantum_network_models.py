@@ -87,12 +87,14 @@ class QuantumCNN(nn.Module):
 
             return expvals
         
+        @qml.qnode(q_device, interface='torch')
         def _quantum_circuit2(inputs: torch.Tensor, weights: dict[str, Any]) -> torch.Tensor:
             """
             Quantum circuit for the quantum neural network.
             """
             x = inputs * np.pi
             x = x.to(self.device)
+            
             for _ in range(self.n_layers):
                 for i in range(self.n_qubits):
                     qml.RY(x[i], wires=i)
@@ -106,6 +108,7 @@ class QuantumCNN(nn.Module):
 
             return expvals
         
+        @qml.qnode(q_device, interface='torch')
         def _quantum_circuit3(inputs: torch.Tensor, weights: dict[str, Any]) -> torch.Tensor:
             """
             Quantum circuit for the quantum neural network.
@@ -132,7 +135,7 @@ class QuantumCNN(nn.Module):
             return expvals
 
         self.qnn = qml.qnn.TorchLayer(
-            _quantum_circuit1,
+            _quantum_circuit3,
             self._weight_shapes()
         )
 
