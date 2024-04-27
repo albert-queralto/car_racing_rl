@@ -135,7 +135,7 @@ class QuantumCNN(nn.Module):
             return expvals
 
         self.qnn = qml.qnn.TorchLayer(
-            _quantum_circuit3,
+            _quantum_circuit2,
             self._weight_shapes()
         )
 
