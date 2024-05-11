@@ -11,7 +11,7 @@ sys.path.append(str(MAIN_PATH))
 
 from src.utils.custom_wrappers import CustomEnvWrapper
 from src.utils.agents import DQNAgent, BaseAgent
-from src.utils.network_models import DQN
+from src.utils.network_models import DuelingDQN
 
 @dataclass
 class AgentEvaluation:
@@ -124,8 +124,8 @@ if __name__ == "__main__":
         'observation_space_shape': (4, 84, 84),
     })
 
-    save_folder = '/home/docker/car_racing/models/DQN/DQN_2/'
-    file_name = '2024-03-30 060915.321647_DQN.pt'
+    save_folder = '/home/docker/car_racing/models/DuelingDQN_2/'
+    file_name = '2024-03-17 062730.090939_DuelingDQN.pt'
     
     model = torch.load(os.path.join(save_folder, file_name))
     
