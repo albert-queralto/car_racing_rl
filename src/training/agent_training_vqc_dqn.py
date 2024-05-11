@@ -481,8 +481,8 @@ if __name__ == '__main__':
     training_params = {
         'model_name': 'DQN',
         'model_type': 'DQN',
-        'n_qubits': 6,
-        'n_layers': 32,
+        'n_qubits': 4,
+        'n_layers': 64,
         'hidden_layer_dim': 256,
         'epsilon_start': 1,
         'epsilon_decay': 0.995,
