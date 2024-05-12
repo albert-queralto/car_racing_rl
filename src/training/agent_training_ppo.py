@@ -3,7 +3,7 @@ import sys
 from dataclasses import dataclass
 import numpy as np
 import json
-# from codecarbon import track_emissions
+from codecarbon import track_emissions
 from memory_profiler import profile
 from typing import Any
 from datetime import datetime
@@ -243,18 +243,16 @@ class AgentTraining:
 
         return self.end_training
 
-    # @track_emissions
+    @track_emissions
     @profile
     def train(self) -> None:
         self._reset_training_variables()
         self._reset_episode_variables()
         self.info_printer.print_device_info(self.agent.device)
         
-        # for i_ep in range(100000):
         while not self.end_training:
             self._reset_episode_variables()
 
-            # for t in range(self.max_steps):
             while not self.is_gamedone:
                 self.perform_episode()
                 if self.end_training:
@@ -426,7 +424,6 @@ if __name__ == "__main__":
     
     environment_params.update({
         'reward_threshold': env.reward_threshold,
-        # 'action_space': env.action_space.n,
         'observation_space_shape': (4, 84, 84),
     })
 
